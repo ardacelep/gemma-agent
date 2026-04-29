@@ -1,38 +1,39 @@
 import { OllamaMessage, ollamaChat } from '../ollama/client';
 import { executeTool, ToolCall } from './tools';
 
-export const AGENT_SYSTEM_PROMPT = `Sen bir yazılım geliştirme asistanısın. Dosya sistemi araçlarına erişimin var.
+export const AGENT_SYSTEM_PROMPT = `You are an expert software development assistant with access to file system tools.
 
-Araçları kullanmak için şu formatı kullan — başka bir şey ekleme:
+To use a tool, output EXACTLY this format — nothing else on the same response:
 <tool_call>
-{"tool":"<isim>", ...argümanlar}
+{"tool":"<name>", ...args}
 </tool_call>
 
-Kullanılabilir araçlar:
+Available tools:
 
-create_file — Dosya oluşturur veya üzerine yazar
-{"tool":"create_file","path":"src/hello.ts","content":"console.log('merhaba')"}
+create_file — Create or overwrite a file
+{"tool":"create_file","path":"src/hello.ts","content":"console.log('hello')"}
 
-edit_file — Dosyada metin değiştirir (search tam eşleşme)
-{"tool":"edit_file","path":"src/hello.ts","search":"eski metin","replace":"yeni metin"}
+edit_file — Replace exact text in a file (search must match exactly)
+{"tool":"edit_file","path":"src/hello.ts","search":"old text","replace":"new text"}
 
-read_file — Dosya içeriğini okur
+read_file — Read file contents
 {"tool":"read_file","path":"src/hello.ts"}
 
-list_files — Dizin içeriğini listeler
+list_files — List directory contents
 {"tool":"list_files","path":"src"}
 
-search_files — Workspace'te metin arar
-{"tool":"search_files","query":"aranacak metin","path":"src"}
+search_files — Search for text across workspace files
+{"tool":"search_files","query":"search term","path":"src"}
 
-run_command — Terminalde komut çalıştırır
+run_command — Run a shell command and capture its output
 {"tool":"run_command","command":"npm install"}
 
-Kurallar:
-- Araç çağrısı yapacaksan SADECE <tool_call> bloğu yaz, başka metin ekleme.
-- Araç sonuçlarını aldıktan sonra kullanıcıya ne yaptığını açıkla.
-- Birden fazla araç gerekiyorsa sırayla kullan, her seferinde bir tane.
-- Türkçe konuş.`;
+Rules:
+- When using a tool, output ONLY the <tool_call> block — no surrounding text.
+- After receiving tool results, explain what you did and what happened.
+- Use tools one at a time, sequentially.
+- Always read a file before editing it to understand its current content.
+- Respond in the same language the user writes in.`;
 
 const TOOL_CALL_RE = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/;
 
@@ -56,7 +57,7 @@ function parseToolCall(raw: string): ToolCall {
 
   // Pass 2 — replace literal newlines inside the JSON text with \n
   //           (only inside string values, i.e. between " pairs)
-  let fixed = raw.replace(/("(?:[^"\\]|\\.)*")/gs, (m) =>
+  const fixed = raw.replace(/("(?:[^"\\]|\\.)*")/gs, (m) =>
     m.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')
   );
   try {
@@ -66,7 +67,7 @@ function parseToolCall(raw: string): ToolCall {
   // Pass 3 — extract fields individually with regex so the content field
   //           never breaks the parser (grab it as the remainder of the JSON)
   const tool = /"tool"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
-  if (!tool) throw new Error('tool alanı bulunamadı');
+  if (!tool) throw new Error('tool field not found');
 
   const result: Record<string, unknown> = { tool };
 
@@ -106,10 +107,12 @@ function sanitizeToolCall(call: ToolCall): ToolCall {
 }
 
 export interface AgentEvent {
-  type: 'text' | 'tool_call' | 'tool_result' | 'done' | 'error';
+  type: 'text' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'agentThinking';
   text?: string;
   tool?: ToolCall;
   result?: { ok: boolean; output: string };
+  iteration?: number;
+  maxIterations?: number;
 }
 
 export async function* runAgentLoop(
@@ -129,6 +132,9 @@ export async function* runAgentLoop(
 
   for (let i = 0; i < maxIterations; i++) {
     if (signal.aborted) break;
+
+    // Emit thinking indicator at the start of each iteration
+    yield { type: 'agentThinking', iteration: i + 1, maxIterations };
 
     // Collect model response
     let raw = '';
@@ -170,7 +176,7 @@ export async function* runAgentLoop(
     try {
       toolCall = parseToolCall(match[1]);
     } catch (e) {
-      yield { type: 'error', text: `Araç çağrısı parse edilemedi: ${(e as Error).message}` };
+      yield { type: 'error', text: `Could not parse tool call: ${(e as Error).message}` };
       yield { type: 'done' };
       return;
     }
@@ -185,7 +191,7 @@ export async function* runAgentLoop(
     messages.push({ role: 'assistant', content: raw });
     messages.push({
       role: 'user',
-      content: `Araç sonucu (${toolCall.tool}): ${result.ok ? 'BAŞARILI' : 'HATA'}\n${result.output}`,
+      content: `Tool result (${toolCall.tool}): ${result.ok ? 'SUCCESS' : 'ERROR'}\n${result.output}`,
     });
   }
 

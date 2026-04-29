@@ -63,13 +63,23 @@ export class GemmaChatProvider {
           // Command itself polls for readiness; refresh UI once it returns
           await this.sendInitState();
           break;
+        case 'regenerate':
+          // Remove last assistant message from history and re-run
+          if (this.history.length >= 2 && this.history[this.history.length - 1].role === 'assistant') {
+            this.history.pop();
+          }
+          await this.handleUserMessage(msg.text as string);
+          break;
       }
     });
 
-    this.panel.onDidDispose(() => { this.panel = undefined; });
-
-    vscode.workspace.onDidChangeConfiguration((e) => {
+    const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('gemmaAgent')) this.sendCurrentSettings();
+    });
+
+    this.panel.onDidDispose(() => {
+      this.panel = undefined;
+      configListener.dispose();
     });
 
     setTimeout(async () => {
@@ -254,14 +264,17 @@ export class GemmaChatProvider {
 
   private async runAgent(content: string): Promise<void> {
     const historyWithoutLast = this.history.slice(0, -1);
+    const cfg = vscode.workspace.getConfiguration('gemmaAgent');
+    const maxIterations = cfg.get<number>('agentMaxIterations', 10);
     let fullResponse = '';
     try {
-      for await (const event of runAgentLoop(content, historyWithoutLast, this.activeAbort!.signal)) {
+      for await (const event of runAgentLoop(content, historyWithoutLast, this.activeAbort!.signal, maxIterations)) {
         switch (event.type) {
-          case 'text':        fullResponse += event.text; this.post({ type: 'chunk', text: event.text! }); break;
-          case 'tool_call':   this.post({ type: 'toolCall', tool: event.tool! }); break;
-          case 'tool_result': this.post({ type: 'toolResult', result: event.result! }); break;
-          case 'error':       this.postError(event.text!); break;
+          case 'text':          fullResponse += event.text; this.post({ type: 'chunk', text: event.text! }); break;
+          case 'tool_call':     this.post({ type: 'toolCall', tool: event.tool! }); break;
+          case 'tool_result':   this.post({ type: 'toolResult', result: event.result! }); break;
+          case 'agentThinking': this.post({ type: 'agentThinking', iteration: event.iteration, maxIterations: event.maxIterations }); break;
+          case 'error':         this.postError(event.text!); break;
         }
       }
       this.history.push({ role: 'assistant', content: fullResponse });
@@ -311,44 +324,47 @@ export class GemmaChatProvider {
     <span id="headerTitle">Gemma Agent</span>
     <button id="modelBadge" title="Model seç">gemma4:e4b</button>
     <div id="headerActions">
-      <button class="icon-btn" id="refreshBtn" title="Yüklü modelleri yenile">⟳</button>
-      <button class="icon-btn" id="stopOllamaBtn" title="Ollama'yı durdur">⏹</button>
-      <button class="icon-btn" id="clearBtn" title="Sohbet geçmişini sil">🗑</button>
+      <button class="icon-btn" id="refreshBtn" title="Refresh installed models">⟳</button>
+      <button class="icon-btn" id="stopOllamaBtn" title="Stop Ollama">⏹</button>
+      <button class="icon-btn" id="clearBtn" title="Clear chat history">🗑</button>
     </div>
   </div>
 
   <div id="modelPopover"></div>
 
   <div id="pillBar">
-    <button class="pill" data-feature="completion" title="Ghost text kod tamamlama">Tamamlama</button>
-    <button class="pill" data-feature="codeActions" title="Sağ tık: Açıkla, Refactor, Test">Kod Eylemleri</button>
-    <button class="pill agent-pill" id="agentPill" title="Dosya oluştur, düzenle, komut çalıştır">⚡ Agent</button>
+    <button class="pill" data-feature="completion" title="Ghost text inline completions">Completion</button>
+    <button class="pill" data-feature="codeActions" title="Right-click: Explain, Refactor, Test">Code Actions</button>
+    <button class="pill agent-pill" id="agentPill" title="Create files, edit, run commands">⚡ Agent</button>
   </div>
 
   <div id="ollamaBanner">
-    <span id="ollamaStatus">⚠ Ollama çalışmıyor</span>
-    <button id="startOllamaBtn">▶ Başlat</button>
+    <span id="ollamaStatus">⚠ Ollama not running</span>
+    <button id="startOllamaBtn">▶ Start</button>
   </div>
 
-  <div id="messages">
-    <div id="emptyState">
-      <div class="empty-icon">✦</div>
-      <div class="empty-title">Gemma Agent</div>
-      <div class="empty-sub">Kod yaz, açıkla, düzelt ya da ⚡ Agent modunda dosya oluştur.</div>
+  <div id="messagesWrapper">
+    <div id="messages">
+      <div id="emptyState">
+        <div class="empty-icon">✦</div>
+        <div class="empty-title">Gemma Agent</div>
+        <div class="empty-sub">Write, explain, fix code or use ⚡ Agent mode to create files.</div>
+      </div>
     </div>
+    <button id="scrollToBottomBtn" title="Scroll to bottom">↓</button>
   </div>
 
   <div id="inputArea">
     <div id="contextChips"></div>
     <div id="inputWrapper">
-      <button class="icon-btn" id="attachBtn" title="Dosya veya seçili kod ekle">⊕</button>
-      <textarea id="input" rows="1" placeholder="Mesaj yaz… (Enter gönder, Shift+Enter yeni satır)"></textarea>
+      <button class="icon-btn" id="attachBtn" title="Attach file or selection">⊕</button>
+      <textarea id="input" rows="1" placeholder="Message… (Enter to send, Shift+Enter for newline)"></textarea>
       <button id="sendBtn" title="Gönder">↑</button>
       <button id="stopBtn" style="display:none" title="Durdur">◼</button>
     </div>
     <div id="attachMenu">
-      <button class="attach-opt" data-source="file">📄 Aktif dosya</button>
-      <button class="attach-opt" data-source="selection">✂ Seçili kod</button>
+      <button class="attach-opt" data-source="file">📄 Active file</button>
+      <button class="attach-opt" data-source="selection">✂ Selected code</button>
     </div>
     <div id="inputHint">
       <span id="modeLabel">Chat</span>

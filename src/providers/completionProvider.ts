@@ -37,12 +37,12 @@ function buildPrompt(doc: vscode.TextDocument, position: vscode.Position): strin
   const lang = doc.languageId;
   const totalLines = doc.lineCount;
 
-  // Prefix: up to 40 lines before cursor
-  const prefixStart = Math.max(0, position.line - 40);
+  // Prefix: up to 60 lines before cursor
+  const prefixStart = Math.max(0, position.line - 60);
   const prefix = doc.getText(new vscode.Range(prefixStart, 0, position.line, position.character));
 
-  // Suffix: up to 15 lines after cursor (so model knows what NOT to write)
-  const suffixEnd = Math.min(totalLines, position.line + 15);
+  // Suffix: up to 20 lines after cursor (so model knows what NOT to write)
+  const suffixEnd = Math.min(totalLines, position.line + 20);
   const suffix = doc.getText(new vscode.Range(position.line, position.character, suffixEnd, 0)).trimEnd();
 
   if (suffix.trim()) {
@@ -78,25 +78,27 @@ function clean(raw: string, linePrefix: string, lang: string): string {
     text = text.slice(lastPrefixLine.length);
   }
 
-  // Cut after first blank line — trailing paragraphs are usually explanation
+  // Cut after first blank line only if the completion is multi-paragraph (looks like explanation)
+  // Single-statement completions (e.g. one-liners) should not be cut
   const blankLine = text.indexOf('\n\n');
-  if (blankLine !== -1) text = text.slice(0, blankLine);
+  if (blankLine !== -1) {
+    const before = text.slice(0, blankLine);
+    // Only cut if the first paragraph is more than one line (real code block) or
+    // if what follows the blank line looks like prose (no code-like characters)
+    const afterBlank = text.slice(blankLine + 2).trimStart();
+    const looksLikeProse = /^[A-Z][a-z]/.test(afterBlank);
+    if (looksLikeProse) {
+      text = before;
+    }
+  }
 
   // Strip conversational filler
   text = text.replace(/^(here is|sure|of course|certainly|i'll|let me)[^:]*:?\s*/i, '');
 
-  // For languages where inline comments start with # or //, strip lines that are ONLY comments
-  const commentStarters = COMMENT_STARTERS[lang] ?? [];
+  // Strip trailing blank lines only (not comment lines — they may be valid)
   const lines = text.split('\n');
-  // Keep lines up to (and including) first all-comment-only line if it's line 0,
-  // but discard trailing comment-only lines
-  while (lines.length > 1) {
-    const last = lines[lines.length - 1].trimStart();
-    if (commentStarters.some((s) => last.startsWith(s)) || last === '') {
-      lines.pop();
-    } else {
-      break;
-    }
+  while (lines.length > 1 && lines[lines.length - 1].trim() === '') {
+    lines.pop();
   }
   text = lines.join('\n');
 
@@ -145,10 +147,11 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
 
         try {
           const prompt = buildPrompt(document, position);
+          const maxTokens = cfg.get<number>('completionMaxTokens', 150);
           const raw = await ollamaGenerate({
             prompt,
             system: SYSTEM,
-            maxTokens: 120,
+            maxTokens,
             signal: this.activeRequest.signal,
           });
 

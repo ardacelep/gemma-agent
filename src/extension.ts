@@ -59,10 +59,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await new Promise<void>((resolve, reject) => {
               cp.exec('open -g -a Ollama', (err) => err ? reject(err) : resolve());
             });
-            ollamaStartedByUs = true;
             progress.report({ message: 'Bağlantı bekleniyor…' });
-            await pollUntilReady();
-            progress.report({ message: 'Hazır ✓' });
+            const ready = await pollUntilReady();
+            if (ready) ollamaStartedByUs = true;
+            progress.report({ message: ready ? 'Hazır ✓' : 'Başlatılamadı' });
             await new Promise((r) => setTimeout(r, 800));
           }
         );
@@ -80,13 +80,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           vscode.window.createTerminal({ name: 'Ollama' });
         terminal.show(true);
         terminal.sendText('ollama serve');
-        ollamaStartedByUs = true;
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Ollama', cancellable: false },
           async (progress) => {
             progress.report({ message: 'Sunucu başlatılıyor…' });
-            await pollUntilReady();
-            progress.report({ message: 'Hazır ✓' });
+            const ready = await pollUntilReady();
+            if (ready) ollamaStartedByUs = true;
+            progress.report({ message: ready ? 'Hazır ✓' : 'Başlatılamadı' });
             await new Promise((r) => setTimeout(r, 800));
           }
         );
@@ -156,20 +156,29 @@ function findMacApp(): string | undefined {
 
 
 async function stopOllama(): Promise<void> {
+  const platform = os.platform();
   await new Promise<void>((resolve) => {
-    cp.exec("osascript -e 'tell application \"Ollama\" to quit'", (err) => {
-      if (!err) { resolve(); return; }
-      cp.exec('pkill -x ollama', () => resolve());
-    });
+    if (platform === 'darwin') {
+      cp.exec("osascript -e 'tell application \"Ollama\" to quit'", (err) => {
+        if (!err) { resolve(); return; }
+        cp.exec('pkill -x ollama', () => resolve());
+      });
+    } else if (platform === 'win32') {
+      cp.exec('taskkill /IM ollama.exe /F', () => resolve());
+    } else {
+      // Linux / other Unix
+      cp.exec('pkill -f ollama', () => resolve());
+    }
   });
 }
 
-async function pollUntilReady(maxWaitMs = 15_000, intervalMs = 1_000): Promise<void> {
+async function pollUntilReady(maxWaitMs = 15_000, intervalMs = 1_000): Promise<boolean> {
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    if (await isOllamaRunning()) return;
+    if (await isOllamaRunning()) return true;
     await new Promise((r) => setTimeout(r, intervalMs));
   }
+  return false;
 }
 
 async function autoSelectModel(): Promise<void> {

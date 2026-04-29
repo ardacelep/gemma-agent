@@ -1,8 +1,19 @@
 {
   "name": "gemma-agent",
   "displayName": "Gemma Agent",
-  "description": "Local AI assistant powered by Ollama + Gemma4",
+  "description": "Local AI coding assistant powered by Ollama + Gemma — chat, inline edit, code actions and agentic file editing, 100% offline.",
   "version": "0.1.0",
+  "publisher": "ardacelep",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ardacelep/gemma-agent"
+  },
+  "keywords": ["ai", "llm", "ollama", "gemma", "copilot", "chat", "code completion", "local", "offline"],
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -140,11 +151,25 @@
           "default": "keep",
           "enum": ["ask", "keep", "stop"],
           "enumDescriptions": [
-            "VS Code kapanırken sor (yalnızca biz başlattıysak)",
-            "Ollama'yı arka planda çalışır bırak",
-            "VS Code kapanınca Ollama'yı durdur (yalnızca biz başlattıysak)"
+            "Ask when VS Code closes (only if we started Ollama)",
+            "Keep Ollama running in the background",
+            "Stop Ollama when VS Code closes (only if we started Ollama)"
           ],
-          "description": "VS Code kapanırken Ollama ne yapsın?"
+          "description": "What to do with Ollama when VS Code closes"
+        },
+        "gemmaAgent.agentMaxIterations": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Maximum number of tool-call iterations the agent will perform before stopping"
+        },
+        "gemmaAgent.completionMaxTokens": {
+          "type": "number",
+          "default": 150,
+          "minimum": 32,
+          "maximum": 512,
+          "description": "Maximum tokens generated for inline code completions"
         }
       }
     },

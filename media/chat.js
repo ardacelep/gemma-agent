@@ -20,6 +20,7 @@
   const attachBtn    = /** @type {HTMLButtonElement} */ (document.getElementById('attachBtn'));
   const attachMenu   = /** @type {HTMLDivElement} */ (document.getElementById('attachMenu'));
   const contextChips = /** @type {HTMLDivElement} */ (document.getElementById('contextChips'));
+  const scrollToBottomBtn = /** @type {HTMLButtonElement} */ (document.getElementById('scrollToBottomBtn'));
 
   /** @type {Array<{name: string, content: string, lang: string}>} */
   let attachedContexts = [];
@@ -28,11 +29,33 @@
   let isGenerating = false;
   let assistantBubble = /** @type {HTMLDivElement|null} */ (null);
   let rawBuffer = '';
+  let pendingChunks = '';
+  let rafPending = false;
   let lastToolCard = /** @type {HTMLDivElement|null} */ (null);
+  let thinkingIndicator = /** @type {HTMLDivElement|null} */ (null);
   let installedModels = /** @type {string[]} */ ([]);
   let availableModels = /** @type {string[]} */ ([]);
   let currentModel = 'gemma4:e4b';
   let popoverOpen = false;
+  let userScrolledUp = false;
+
+  // ── Scroll tracking for sticky button ────────────────
+  messagesEl.addEventListener('scroll', () => {
+    const threshold = 80;
+    const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < threshold;
+    userScrolledUp = !atBottom;
+    if (scrollToBottomBtn) {
+      scrollToBottomBtn.classList.toggle('visible', userScrolledUp && isGenerating);
+    }
+  });
+
+  if (scrollToBottomBtn) {
+    scrollToBottomBtn.addEventListener('click', () => {
+      userScrolledUp = false;
+      scrollToBottom();
+      scrollToBottomBtn.classList.remove('visible');
+    });
+  }
 
   // ── Auto-resize textarea ───────────────────────────────
   inputEl.addEventListener('input', () => {
@@ -40,7 +63,24 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
   });
 
-  // ── Send ──────────────────────────────────────────────
+  // ── Escape key: close popovers / stop generation ──────
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (popoverOpen) {
+      modelPopover.classList.remove('open');
+      popoverOpen = false;
+      return;
+    }
+    if (attachMenuOpen) {
+      attachMenuOpen = false;
+      attachMenu.classList.remove('open');
+      return;
+    }
+    if (isGenerating) {
+      vscode.postMessage({ type: 'stopGeneration' });
+    }
+  });
+
   // ── Attach menu ───────────────────────────────────────
   attachBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -69,7 +109,7 @@
       chip.innerHTML =
         `<span class="chip-icon">📎</span>` +
         `<span class="chip-name" title="${escapeHtml(ctx.name)}">${escapeHtml(ctx.name)}</span>` +
-        `<button class="chip-remove" data-idx="${idx}" title="Kaldır">×</button>`;
+        `<button class="chip-remove" data-idx="${idx}" title="Remove">×</button>`;
       contextChips.appendChild(chip);
     });
     contextChips.style.display = attachedContexts.length ? 'flex' : 'none';
@@ -103,6 +143,7 @@
   stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'stopGeneration' }));
 
   clearBtn.addEventListener('click', () => {
+    if (isGenerating) return; // Guard: don't clear while generating
     messagesEl.innerHTML = '';
     messagesEl.appendChild(emptyState);
     emptyState.style.display = 'flex';
@@ -142,7 +183,7 @@
     if (installedModels.length > 0) {
       const header = document.createElement('div');
       header.className = 'popover-section-header';
-      header.textContent = '✓ Yüklü modeller';
+      header.textContent = '✓ Installed models';
       modelPopover.appendChild(header);
 
       installedModels.forEach((m) => {
@@ -163,13 +204,13 @@
     if (availableModels.length > 0) {
       const header = document.createElement('div');
       header.className = 'popover-section-header';
-      header.textContent = '⬇ İndirilebilir modeller';
+      header.textContent = '⬇ Available to download';
       modelPopover.appendChild(header);
 
       availableModels.forEach((m) => {
         const opt = document.createElement('div');
         opt.className = 'model-option available';
-        opt.innerHTML = `<span class="model-dot available-dot"></span><span>${m}</span><button class="pull-btn" title="ollama pull ${m}">İndir</button>`;
+        opt.innerHTML = `<span class="model-dot available-dot"></span><span>${m}</span><button class="pull-btn" title="ollama pull ${m}">Download</button>`;
         opt.querySelector('.pull-btn')?.addEventListener('click', (e) => {
           e.stopPropagation();
           modelPopover.classList.remove('open');
@@ -183,7 +224,7 @@
     if (installedModels.length === 0 && availableModels.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'popover-section-header';
-      empty.textContent = 'Ollama çevrimdışı';
+      empty.textContent = 'Ollama offline';
       modelPopover.appendChild(empty);
     }
   }
@@ -200,7 +241,7 @@
 
   // ── Ollama banner ─────────────────────────────────────
   startOllamaBtn.addEventListener('click', () => {
-    startOllamaBtn.textContent = '⏳ Başlatılıyor…';
+    startOllamaBtn.textContent = '⏳ Starting…';
     startOllamaBtn.disabled = true;
     vscode.postMessage({ type: 'startOllama' });
   });
@@ -258,18 +299,28 @@
         startAssistantBubble();
         break;
       case 'chunk':
-        appendChunk(msg.text);
+        scheduleChunk(msg.text);
         break;
       case 'toolCall':
+        flushPendingChunks();
+        removeThinkingIndicator();
         appendToolCard(msg.tool);
         break;
       case 'toolResult':
         finalizeToolCard(msg.result);
         break;
+      case 'agentThinking':
+        flushPendingChunks();
+        showThinkingIndicator(msg.iteration, msg.maxIterations);
+        break;
       case 'endAssistant':
+        flushPendingChunks();
+        removeThinkingIndicator();
         finalizeAssistantBubble();
         break;
       case 'error':
+        flushPendingChunks();
+        removeThinkingIndicator();
         appendError(msg.text);
         break;
       case 'history':
@@ -287,11 +338,11 @@
   });
 
   // ── State helpers ─────────────────────────────────────
-  function truncateModel(name) { return name; } // badge CSS zaten ellipsis yapıyor
+  function truncateModel(name) { return name; } // CSS handles ellipsis
 
   function setOllamaStatus(running) {
     ollamaBanner.style.display = running ? 'none' : 'flex';
-    if (running) { startOllamaBtn.textContent = '▶ Başlat'; startOllamaBtn.disabled = false; }
+    if (running) { startOllamaBtn.textContent = '▶ Start'; startOllamaBtn.disabled = false; }
   }
 
   function setAgentMode(enabled) {
@@ -300,8 +351,8 @@
     modeLabel.textContent = enabled ? '⚡ Agent' : 'Chat';
     modeLabel.className = 'modeLabel' + (enabled ? ' agent' : '');
     inputEl.placeholder = enabled
-      ? 'Agent: dosya oluştur, düzenle, komut çalıştır… (Enter)'
-      : 'Mesaj yaz… (Enter gönder, Shift+Enter yeni satır)';
+      ? 'Agent: create files, edit, run commands… (Enter)'
+      : 'Message… (Enter to send, Shift+Enter for newline)';
   }
 
   function applyFeatures(features) {
@@ -321,9 +372,58 @@
     sendBtn.disabled = disabled;
     sendBtn.style.display = disabled ? 'none' : 'flex';
     stopBtn.style.display = disabled ? 'flex' : 'none';
+    clearBtn.disabled = disabled;
+    clearBtn.style.opacity = disabled ? '0.4' : '';
+    clearBtn.style.cursor = disabled ? 'default' : '';
   }
 
-  function scrollToBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+  function scrollToBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function scrollToBottomIfSticky() {
+    if (!userScrolledUp) scrollToBottom();
+  }
+
+  // ── RAF-batched chunk rendering ────────────────────────
+  function scheduleChunk(text) {
+    pendingChunks += text;
+    if (!rafPending) {
+      rafPending = true;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        flushPendingChunks();
+      });
+    }
+  }
+
+  function flushPendingChunks() {
+    if (!pendingChunks || !assistantBubble) { pendingChunks = ''; return; }
+    rawBuffer += pendingChunks;
+    pendingChunks = '';
+    assistantBubble.innerHTML = renderMarkdown(rawBuffer);
+    scrollToBottomIfSticky();
+  }
+
+  // ── Agent thinking indicator ──────────────────────────
+  function showThinkingIndicator(iteration, maxIterations) {
+    removeThinkingIndicator();
+    const div = document.createElement('div');
+    div.className = 'agent-thinking';
+    div.innerHTML =
+      `<span class="thinking-spinner">⟳</span>` +
+      `<span class="thinking-label">Thinking… <span class="thinking-step">step ${iteration}/${maxIterations}</span></span>`;
+    messagesEl.appendChild(div);
+    thinkingIndicator = div;
+    scrollToBottomIfSticky();
+  }
+
+  function removeThinkingIndicator() {
+    if (thinkingIndicator) {
+      thinkingIndicator.remove();
+      thinkingIndicator = null;
+    }
+  }
 
   // ── Message builders ──────────────────────────────────
   function appendUserMessage(text) {
@@ -336,11 +436,14 @@
     wrap.appendChild(bubble);
     messagesEl.appendChild(wrap);
     scrollToBottom();
+    userScrolledUp = false;
   }
 
   function startAssistantBubble() {
     isGenerating = true;
     rawBuffer = '';
+    pendingChunks = '';
+    rafPending = false;
     setInputDisabled(true);
     hideEmpty();
 
@@ -359,24 +462,20 @@
     wrap.appendChild(assistantBubble);
     messagesEl.appendChild(wrap);
     scrollToBottom();
-  }
-
-  function appendChunk(text) {
-    if (!assistantBubble) return;
-    rawBuffer += text;
-    assistantBubble.innerHTML = renderMarkdown(rawBuffer);
-    scrollToBottom();
+    userScrolledUp = false;
   }
 
   function finalizeAssistantBubble() {
     isGenerating = false;
     setInputDisabled(false);
+    if (scrollToBottomBtn) scrollToBottomBtn.classList.remove('visible');
     if (assistantBubble) {
       if (!rawBuffer.trim()) {
         // Agent only did tool calls — remove empty bubble
         assistantBubble.closest('.message')?.remove();
       } else {
         addCodeBlockButtons(assistantBubble);
+        addRegenerateButton(assistantBubble.closest('.message'));
       }
     }
     assistantBubble = null;
@@ -387,7 +486,10 @@
   function appendError(text) {
     isGenerating = false;
     rawBuffer = '';
+    pendingChunks = '';
+    rafPending = false;
     setInputDisabled(false);
+    if (scrollToBottomBtn) scrollToBottomBtn.classList.remove('visible');
     // Remove typing bubble if still present
     assistantBubble?.closest('.message')?.remove();
     assistantBubble = null;
@@ -403,14 +505,35 @@
     scrollToBottom();
   }
 
+  // ── Regenerate last response ──────────────────────────
+  function addRegenerateButton(msgWrap) {
+    if (!msgWrap) return;
+    const btn = document.createElement('button');
+    btn.className = 'regen-btn';
+    btn.title = 'Regenerate response';
+    btn.textContent = '↺';
+    btn.addEventListener('click', () => {
+      if (isGenerating) return;
+      // Find and re-send the last user message
+      const allMessages = messagesEl.querySelectorAll('.message.user');
+      const lastUser = allMessages[allMessages.length - 1];
+      const lastText = lastUser?.querySelector('.bubble')?.textContent ?? '';
+      if (!lastText) return;
+      // Remove last assistant message
+      msgWrap.remove();
+      vscode.postMessage({ type: 'regenerate', text: lastText });
+    });
+    msgWrap.appendChild(btn);
+  }
+
   // ── Tool cards ────────────────────────────────────────
   const TOOL_META = {
-    create_file:  { emoji: '📄', label: 'Dosya oluştur' },
-    edit_file:    { emoji: '✏️', label: 'Dosya düzenle' },
-    read_file:    { emoji: '📖', label: 'Dosya oku' },
-    run_command:  { emoji: '⚡', label: 'Komut çalıştır' },
-    list_files:   { emoji: '📁', label: 'Dizin listele' },
-    search_files: { emoji: '🔍', label: 'Dosya ara' },
+    create_file:  { emoji: '📄', label: 'Create file' },
+    edit_file:    { emoji: '✏️', label: 'Edit file' },
+    read_file:    { emoji: '📖', label: 'Read file' },
+    run_command:  { emoji: '⚡', label: 'Run command' },
+    list_files:   { emoji: '📁', label: 'List directory' },
+    search_files: { emoji: '🔍', label: 'Search files' },
   };
 
   function appendToolCard(tool) {
@@ -425,11 +548,11 @@
         <span class="tool-name">${meta.label}</span>
       </div>
       <span class="tool-arg" title="${escapeHtml(arg)}">${escapeHtml(arg)}</span>
-      <span class="tool-status-badge">çalışıyor…</span>`;
+      <span class="tool-status-badge">running…</span>`;
 
     messagesEl.appendChild(card);
     lastToolCard = card;
-    scrollToBottom();
+    scrollToBottomIfSticky();
   }
 
   function finalizeToolCard(result) {
@@ -437,7 +560,7 @@
     lastToolCard.classList.remove('running');
     lastToolCard.classList.add(result.ok ? 'success' : 'failure');
     const badge = lastToolCard.querySelector('.tool-status-badge');
-    if (badge) badge.textContent = result.ok ? '✓ Tamam' : '✗ Hata';
+    if (badge) badge.textContent = result.ok ? '✓ Done' : '✗ Error';
 
     if (result.output && result.output.length > 15) {
       const details = document.createElement('details');
@@ -445,12 +568,12 @@
       const pre = document.createElement('pre');
       pre.className = 'tool-output-pre';
       pre.textContent = result.output;
-      details.innerHTML = '<summary>Çıktıyı göster</summary>';
+      details.innerHTML = '<summary>Show output</summary>';
       details.appendChild(pre);
       lastToolCard.appendChild(details);
     }
     lastToolCard = null;
-    scrollToBottom();
+    scrollToBottomIfSticky();
   }
 
   // ── Syntax highlighter ────────────────────────────────
@@ -611,7 +734,7 @@
       parts.push(
         `<div class="code-block" data-code="${encodeURIComponent(code)}">` +
           `<div class="code-header"><span class="code-lang">${escapeHtml(lang)}</span>` +
-          `<button class="copy-btn">Kopyala</button></div>` +
+          `<button class="copy-btn">Copy</button></div>` +
           `<pre><code>${highlighted}</code></pre>` +
         `</div>`
       );
@@ -669,13 +792,13 @@
           navigator.clipboard.writeText(code).then(() => {
             copyBtn.innerHTML = '&#10003;';
             copyBtn.classList.add('copied');
-            setTimeout(() => { copyBtn.innerHTML = 'Kopyala'; copyBtn.classList.remove('copied'); }, 1500);
+            setTimeout(() => { copyBtn.innerHTML = 'Copy'; copyBtn.classList.remove('copied'); }, 1500);
           });
         });
       }
       const insertBtn = document.createElement('button');
       insertBtn.className = 'insert-btn';
-      insertBtn.textContent = '↩ Editöre ekle';
+      insertBtn.textContent = '↩ Insert into editor';
       insertBtn.addEventListener('click', () => vscode.postMessage({ type: 'insertCode', code }));
       block.after(insertBtn);
     });
