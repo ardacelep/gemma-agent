@@ -1,0 +1,182 @@
+{
+  "name": "gemma-agent",
+  "displayName": "Gemma Agent",
+  "description": "Local AI assistant powered by Ollama + Gemma4",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["AI", "Machine Learning", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "gemmaAgent.openChat",
+        "title": "Gemma: Open Chat",
+        "icon": "media/icon.svg"
+      },
+      {
+        "command": "gemmaAgent.explainCode",
+        "title": "Gemma: Explain Selected Code"
+      },
+      {
+        "command": "gemmaAgent.refactorCode",
+        "title": "Gemma: Refactor Selected Code"
+      },
+      {
+        "command": "gemmaAgent.fixCode",
+        "title": "Gemma: Fix Selected Code"
+      },
+      {
+        "command": "gemmaAgent.generateTests",
+        "title": "Gemma: Generate Tests for Selection"
+      },
+      {
+        "command": "gemmaAgent.runInTerminal",
+        "title": "Gemma: Run / Explain in Terminal"
+      },
+      {
+        "command": "gemmaAgent.toggleCompletion",
+        "title": "Gemma: Toggle Inline Completion"
+      },
+      {
+        "command": "gemmaAgent.startOllama",
+        "title": "Gemma: Ollama'yı Başlat"
+      },
+      {
+        "command": "gemmaAgent.pullModel",
+        "title": "Gemma: Model İndir (ollama pull)"
+      },
+      {
+        "command": "gemmaAgent.inlineEdit",
+        "title": "Gemma: Inline Düzenle"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "gemmaAgent.openChat",
+          "group": "navigation",
+          "icon": "media/icon.svg"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "gemmaAgent.explainCode",
+          "when": "editorHasSelection",
+          "group": "gemmaAgent@1"
+        },
+        {
+          "command": "gemmaAgent.refactorCode",
+          "when": "editorHasSelection",
+          "group": "gemmaAgent@2"
+        },
+        {
+          "command": "gemmaAgent.fixCode",
+          "when": "editorHasSelection",
+          "group": "gemmaAgent@3"
+        },
+        {
+          "command": "gemmaAgent.generateTests",
+          "when": "editorHasSelection",
+          "group": "gemmaAgent@4"
+        },
+        {
+          "command": "gemmaAgent.inlineEdit",
+          "when": "editorHasSelection",
+          "group": "gemmaAgent@5"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Gemma Agent",
+      "properties": {
+        "gemmaAgent.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama server URL"
+        },
+        "gemmaAgent.model": {
+          "type": "string",
+          "default": "gemma3:4b",
+          "enum": [
+            "gemma4:e4b",
+            "gemma4:e2b",
+            "gemma4:9b",
+            "gemma4:12b",
+            "gemma4:27b",
+            "gemma3:1b",
+            "gemma3:4b",
+            "gemma3:12b",
+            "gemma3:27b",
+            "gemma3n:e2b",
+            "gemma3n:e4b"
+          ],
+          "description": "Gemma4 model to use"
+        },
+        "gemmaAgent.completionEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline code completion"
+        },
+        "gemmaAgent.completionDebounceMs": {
+          "type": "number",
+          "default": 600,
+          "description": "Debounce delay (ms) before triggering inline completion"
+        },
+        "gemmaAgent.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "Max tokens for chat responses"
+        },
+        "gemmaAgent.codeActionsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Gemma code actions (lightbulb menu)"
+        },
+        "gemmaAgent.ollamaOnExit": {
+          "type": "string",
+          "default": "keep",
+          "enum": ["ask", "keep", "stop"],
+          "enumDescriptions": [
+            "VS Code kapanırken sor (yalnızca biz başlattıysak)",
+            "Ollama'yı arka planda çalışır bırak",
+            "VS Code kapanınca Ollama'yı durdur (yalnızca biz başlattıysak)"
+          ],
+          "description": "VS Code kapanırken Ollama ne yapsın?"
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "gemmaAgent.openChat",
+        "key": "ctrl+shift+g",
+        "mac": "cmd+shift+g"
+      },
+      {
+        "command": "gemmaAgent.explainCode",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "gemmaAgent.inlineEdit",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "editorHasSelection"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
