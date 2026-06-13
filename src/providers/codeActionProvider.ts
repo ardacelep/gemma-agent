@@ -29,23 +29,42 @@ export class GemmaCodeActionProvider implements vscode.CodeActionProvider {
 
   provideCodeActions(
     document: vscode.TextDocument,
-    range: vscode.Range | vscode.Selection
+    range: vscode.Range | vscode.Selection,
+    context: vscode.CodeActionContext
   ): vscode.CodeAction[] {
-    if (range.isEmpty) return [];
     const cfg = vscode.workspace.getConfiguration('gemmaAgent');
     if (!cfg.get<boolean>('codeActionsEnabled', true)) return [];
 
-    return (Object.keys(ACTION_PROMPTS) as ActionKind[]).map((kind) => {
-      const action = new vscode.CodeAction(
-        ACTION_PROMPTS[kind].title,
-        kind === 'fix' ? vscode.CodeActionKind.QuickFix : vscode.CodeActionKind.Refactor
-      );
-      action.command = {
-        command: `gemmaAgent.${kind}Code`,
-        title: ACTION_PROMPTS[kind].title,
+    const actions: vscode.CodeAction[] = [];
+
+    // "✨ Fix with Gemma" — preferred quick-fix when there's a diagnostic here
+    // (works without a selection, unlike the explain/refactor actions below)
+    for (const d of context.diagnostics) {
+      const fix = new vscode.CodeAction('✨ Fix with Gemma', vscode.CodeActionKind.QuickFix);
+      fix.diagnostics = [d];
+      fix.isPreferred = true;
+      const code = typeof d.code === 'object' && d.code !== null ? String(d.code.value) : (d.code !== undefined ? String(d.code) : '');
+      fix.command = {
+        command: 'gemmaAgent.fixDiagnostic',
+        title: '✨ Fix with Gemma',
+        arguments: [document.uri, d.range, d.message, code],
       };
-      return action;
-    });
+      actions.push(fix);
+    }
+
+    // Explain / refactor / fix / tests — require a selection
+    if (!range.isEmpty) {
+      for (const kind of Object.keys(ACTION_PROMPTS) as ActionKind[]) {
+        const action = new vscode.CodeAction(
+          ACTION_PROMPTS[kind].title,
+          kind === 'fix' ? vscode.CodeActionKind.QuickFix : vscode.CodeActionKind.Refactor
+        );
+        action.command = { command: `gemmaAgent.${kind}Code`, title: ACTION_PROMPTS[kind].title };
+        actions.push(action);
+      }
+    }
+
+    return actions;
   }
 }
 

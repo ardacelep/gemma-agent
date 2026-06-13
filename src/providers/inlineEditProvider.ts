@@ -60,6 +60,7 @@ export function registerInlineEdit(context: vscode.ExtensionContext): void {
     vscode.languages.registerCodeLensProvider('*', new InlineEditCodeLensProvider()),
     vscode.commands.registerCommand('gemmaAgent.inlineEditAccept', acceptInlineEdit),
     vscode.commands.registerCommand('gemmaAgent.inlineEditReject', rejectInlineEdit),
+    vscode.commands.registerCommand('gemmaAgent.fixDiagnostic', fixDiagnostic),
     vscode.workspace.onDidChangeTextDocument(onDocChanged),
     vscode.workspace.onDidCloseTextDocument(onDocClosed),
     { dispose: () => void endSession() }
@@ -90,15 +91,8 @@ ${before}[CURSOR]${after}
 Return only the code to insert at [CURSOR]:`;
 }
 
+/** Command entry: ask for an instruction, then run on the current selection/cursor. */
 export async function inlineEdit(editor: vscode.TextEditor): Promise<void> {
-  if (!await isOllamaRunning()) {
-    vscode.window.showErrorMessage('Ollama is not running. Start it from the Gemma chat panel or run `ollama serve`.');
-    return;
-  }
-
-  // Starting a new session auto-rejects a pending one
-  if (session) await rejectInlineEdit();
-
   const hasSelection = !editor.selection.isEmpty;
   const instruction = await vscode.window.showInputBox({
     title: hasSelection ? 'Gemma Inline Edit' : 'Gemma Inline Edit — insert at cursor',
@@ -109,19 +103,51 @@ export async function inlineEdit(editor: vscode.TextEditor): Promise<void> {
     ignoreFocusOut: true,
   });
   if (!instruction) return;
+  await runInlineEdit(editor, editor.selection, instruction);
+}
 
+/** Quick-fix entry: fix a specific diagnostic via the inline-edit flow. */
+async function fixDiagnostic(uri: vscode.Uri, range: vscode.Range, message: string, code?: string): Promise<void> {
+  const editor = await vscode.window.showTextDocument(uri);
+  const doc = editor.document;
+  // Expand to full lines ±3 for context
+  const startLine = Math.max(0, range.start.line - 3);
+  const endLine = Math.min(doc.lineCount - 1, range.end.line + 3);
+  const expanded = new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length);
+  const instruction = `Fix this problem: ${message}${code ? ` (${code})` : ''}`;
+  await runInlineEdit(editor, expanded, instruction, { progressTitle: 'Gemma: fixing problem' });
+}
+
+/**
+ * Stream an edit into `range` (empty range = insert at cursor). Shared by the
+ * inlineEdit command and the "✨ Fix with Gemma" quick-fix.
+ */
+export async function runInlineEdit(
+  editor: vscode.TextEditor,
+  range: vscode.Range,
+  instruction: string,
+  opts?: { progressTitle?: string }
+): Promise<void> {
+  if (!await isOllamaRunning()) {
+    vscode.window.showErrorMessage('The local AI server is not running. Open the Gemma panel to set it up.');
+    return;
+  }
+
+  // Starting a new session auto-rejects a pending one
+  if (session) await rejectInlineEdit();
+
+  const hasSelection = !range.isEmpty;
   const doc = editor.document;
   const lang = doc.languageId;
-  const selection = editor.selection;
-  const startOffset = doc.offsetAt(selection.start);
-  const originalText = hasSelection ? doc.getText(selection) : '';
+  const startOffset = doc.offsetAt(range.start);
+  const originalText = hasSelection ? doc.getText(range) : '';
 
   let prompt: string;
   if (hasSelection) {
     prompt = buildEditPrompt(originalText, lang, instruction);
   } else {
-    const beforeRange = new vscode.Range(new vscode.Position(Math.max(0, selection.start.line - 40), 0), selection.start);
-    const afterRange = new vscode.Range(selection.end, new vscode.Position(Math.min(doc.lineCount - 1, selection.end.line + 15), 0));
+    const beforeRange = new vscode.Range(new vscode.Position(Math.max(0, range.start.line - 40), 0), range.start);
+    const afterRange = new vscode.Range(range.end, new vscode.Position(Math.min(doc.lineCount - 1, range.end.line + 15), 0));
     prompt = buildInsertPrompt(doc.getText(beforeRange), doc.getText(afterRange), lang, instruction);
   }
 
@@ -137,10 +163,10 @@ export async function inlineEdit(editor: vscode.TextEditor): Promise<void> {
   };
   await vscode.commands.executeCommand('setContext', 'gemmaAgent.inlineEditActive', true);
 
-  // Edit mode: remove the selection first — same undo unit as the stream
+  // Edit mode: remove the target range first — same undo unit as the stream
   if (hasSelection) {
     session.applyingEdit = true;
-    const removed = await editor.edit((eb) => eb.delete(selection), { undoStopBefore: true, undoStopAfter: false });
+    const removed = await editor.edit((eb) => eb.delete(range), { undoStopBefore: true, undoStopAfter: false });
     session.applyingEdit = false;
     if (!removed) {
       await endSession();
@@ -150,7 +176,7 @@ export async function inlineEdit(editor: vscode.TextEditor): Promise<void> {
 
   try {
     await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Window, title: `Gemma: ${instruction}` },
+      { location: vscode.ProgressLocation.Window, title: opts?.progressTitle ?? `Gemma: ${instruction}` },
       () => streamResponse(prompt, session!.abort.signal)
     );
   } catch (err) {

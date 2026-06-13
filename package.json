@@ -249,6 +249,11 @@
           "maximum": 30,
           "description": "Maximum number of tool-call iterations the agent will perform before stopping"
         },
+        "gemmaAgent.agentAutoVerify": {
+          "type": "boolean",
+          "default": true,
+          "description": "After the agent edits files, automatically run diagnostics and let it fix any errors before finishing"
+        },
         "gemmaAgent.agentRequireApproval": {
           "type": "string",
           "default": "commands",

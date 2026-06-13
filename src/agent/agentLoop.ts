@@ -93,6 +93,10 @@ export async function* runAgentLoop(
   const cfg = vscode.workspace.getConfiguration('gemmaAgent');
   const budget = computeBudget(cfg.get<number>('numCtx', 8192), cfg.get<number>('maxTokens', 4096));
   const approvalMode = cfg.get<ApprovalMode>('agentRequireApproval', 'commands');
+  const autoVerify = cfg.get<boolean>('agentAutoVerify', true);
+
+  let mutated = false;       // a create_file/edit_file succeeded this run
+  let autoVerified = false;  // auto-verify has run at most once
 
   for (let i = 0; i < maxIterations; i++) {
     if (signal.aborted) break;
@@ -154,7 +158,29 @@ export async function* runAgentLoop(
         });
         continue;
       }
-      // No tool call — the agent is done
+      // No tool call — the agent thinks it is done. Optionally verify its edits.
+      if (autoVerify && mutated && !autoVerified && i < maxIterations - 1) {
+        autoVerified = true;
+        // Language servers lag behind file writes — give them a beat
+        await new Promise((r) => setTimeout(r, 1000));
+        if (signal.aborted) break;
+        const verifyId = `tc-verify-${Date.now()}`;
+        const verifyCall: ToolCall = { tool: 'get_diagnostics' };
+        yield { type: 'tool_call', tool: verifyCall, callId: verifyId, requiresApproval: false };
+        const verifyResult = await executeTool(verifyCall, signal);
+        yield { type: 'tool_result', result: verifyResult, callId: verifyId };
+        if (/\[Error\]/.test(verifyResult.output)) {
+          messages.push({ role: 'assistant', content: raw });
+          messages.push({
+            role: 'user',
+            content:
+              'Automatic verification found these problems after your edits:\n' +
+              verifyResult.output +
+              '\nFix them, then finish.',
+          });
+          continue;
+        }
+      }
       yield { type: 'done' };
       return;
     }
@@ -206,6 +232,9 @@ export async function* runAgentLoop(
     }
 
     const result = await executeTool(toolCall, signal);
+    if (result.ok && (toolCall.tool === 'create_file' || toolCall.tool === 'edit_file')) {
+      mutated = true;
+    }
 
     yield { type: 'tool_result', result, callId };
 
