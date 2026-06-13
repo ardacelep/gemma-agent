@@ -38,7 +38,7 @@ Select code (or just place the cursor) and press `Cmd+Shift+I` / `Ctrl+Shift+I`:
 ## Requirements
 
 - [Ollama](https://ollama.com/download) installed and running (`ollama serve`)
-- A Gemma model pulled, e.g. `ollama pull gemma3:4b` (the extension can pull models for you)
+- A Gemma model pulled, e.g. `ollama pull gemma4:e4b` (the extension can pull models for you)
 
 ## Keyboard shortcuts
 
@@ -58,7 +58,7 @@ Select code (or just place the cursor) and press `Cmd+Shift+I` / `Ctrl+Shift+I`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `gemmaAgent.model` | `gemma3:4b` | Model to use |
+| `gemmaAgent.model` | `gemma4:e4b` | Model to use |
 | `gemmaAgent.numCtx` | `8192` | Context window size sent to Ollama (more = more RAM) |
 | `gemmaAgent.agentRequireApproval` | `commands` | Which agent tools need your approval (`commands` / `commandsAndWrites` / `never`) |
 | `gemmaAgent.completionLanguages` | `{"*": true, "markdown": false, …}` | Per-language completion toggle |

@@ -122,7 +122,7 @@
         },
         "gemmaAgent.model": {
           "type": "string",
-          "default": "gemma3:4b",
+          "default": "gemma4:e4b",
           "enum": [
             "gemma4:e4b",
             "gemma4:e2b",

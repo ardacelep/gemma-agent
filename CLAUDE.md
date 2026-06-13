@@ -8,7 +8,7 @@ VS Code extension: Ollama üzerinden yerel Gemma modelleriyle çalışan, tamame
 - **Dil:** TypeScript (strict), derleme hedefi `out/`
 - **Platform:** VS Code Extension API (^1.85.0)
 - **LLM Backend:** Ollama REST API (default: `http://localhost:11434`)
-- **Model:** Gemma3/Gemma4 serisi (default: `gemma3:4b` — kodda `DEFAULT_MODEL` sabiti)
+- **Model:** Gemma3/Gemma4 serisi (default: `gemma4:e4b` — kodda `DEFAULT_MODEL` sabiti)
 - **Build:** `tsc -p ./` → `npm run compile`
 - **UI dili:** İngilizce (model, kullanıcının yazdığı dilde yanıt verir)
 
@@ -49,7 +49,7 @@ media/
 | Anahtar | Default | Açıklama |
 |---|---|---|
 | `gemmaAgent.ollamaUrl` | `http://localhost:11434` | Ollama adresi |
-| `gemmaAgent.model` | `gemma3:4b` | Aktif model |
+| `gemmaAgent.model` | `gemma4:e4b` | Aktif model |
 | `gemmaAgent.maxTokens` | `4096` | Chat max token (num_predict) |
 | `gemmaAgent.numCtx` | `8192` | Ollama context window (num_ctx) |
 | `gemmaAgent.completionMaxTokens` | `150` | Completion max token |

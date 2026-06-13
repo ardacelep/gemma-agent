@@ -107,7 +107,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('gemmaAgent.pullModel', async (modelName?: string) => {
       const model = modelName ?? await vscode.window.showInputBox({
         prompt: 'Model to download',
-        placeHolder: 'e.g. gemma3:4b',
+        placeHolder: 'e.g. gemma4:e4b',
       });
       if (!model) return;
       const terminal = vscode.window.terminals.find((t) => t.name === 'Ollama') ??

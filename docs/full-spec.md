@@ -231,7 +231,7 @@ warmupModel(model: string, signal): Promise<void>  // hata fırlatır (sahte Rea
 // Hatalar
 class OllamaError { kind: 'connection' | 'model-not-found' | 'http' | 'timeout' }
 describeOllamaError(err): string   // kullanıcıya gösterilecek mesaj
-DEFAULT_MODEL = 'gemma3:4b'
+DEFAULT_MODEL = 'gemma4:e4b'
 ```
 
 Tüm isteklere `options.num_ctx` (`gemmaAgent.numCtx`) eklenir.
@@ -312,7 +312,7 @@ fitMessages(messages, budget)     // sistem + son mesaj sabit;
 | Anahtar | Tip | Default | Açıklama |
 |---|---|---|---|
 | `gemmaAgent.ollamaUrl` | string | `http://localhost:11434` | Ollama sunucu adresi |
-| `gemmaAgent.model` | enum | `gemma3:4b` | Kullanılan model |
+| `gemmaAgent.model` | enum | `gemma4:e4b` | Kullanılan model |
 | `gemmaAgent.completionEnabled` | boolean | `true` | Inline completion aktif/pasif |
 | `gemmaAgent.completionDebounceMs` | number | `600` | Completion tetikleme gecikmesi (ms) |
 | `gemmaAgent.completionMaxTokens` | number | `150` | Completion max token (32–512) |

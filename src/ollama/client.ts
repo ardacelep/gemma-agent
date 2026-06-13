@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-export const DEFAULT_MODEL = 'gemma3:4b';
+export const DEFAULT_MODEL = 'gemma4:e4b';
 
 export interface OllamaMessage {
   role: 'system' | 'user' | 'assistant';
