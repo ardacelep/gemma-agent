@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { OllamaMessage, describeOllamaError, isOllamaRunning, ollamaChat } from '../ollama/client';
+import { OllamaMessage, describeOllamaError, isOllamaRunning, ollamaChat } from '../llm/client';
 
 /**
  * Inline edit: streams the model's rewrite directly into the editor as one

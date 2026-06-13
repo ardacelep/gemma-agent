@@ -1,5 +1,5 @@
 // Pure commit-message helpers. MUST NOT import vscode (kept unit-testable).
-import { estimateTokens } from '../ollama/contextWindow';
+import { estimateTokens } from '../llm/contextWindow';
 
 export const DIFF_TOKEN_CAP = 6_000;
 

@@ -9,7 +9,17 @@
     "type": "git",
     "url": "https://github.com/ardacelep/gemma-agent"
   },
-  "keywords": ["ai", "llm", "ollama", "gemma", "copilot", "chat", "code completion", "local", "offline"],
+  "keywords": [
+    "ai",
+    "llm",
+    "ollama",
+    "gemma",
+    "copilot",
+    "chat",
+    "code completion",
+    "local",
+    "offline"
+  ],
   "galleryBanner": {
     "color": "#1e1e2e",
     "theme": "dark"
@@ -17,15 +27,43 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["AI", "Machine Learning", "Other"],
-  "activationEvents": ["onStartupFinished"],
-  "main": "./out/extension.js",
+  "categories": [
+    "AI",
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gemmaAgent",
+          "title": "Gemma Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "gemmaAgent": [
+        {
+          "id": "gemmaAgent.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "gemmaAgent.openChat",
         "title": "Gemma: Open Chat",
         "icon": "media/icon.svg"
+      },
+      {
+        "command": "gemmaAgent.installServer",
+        "title": "Gemma: Install Local AI Server"
       },
       {
         "command": "gemmaAgent.explainCode",
@@ -115,10 +153,28 @@
     "configuration": {
       "title": "Gemma Agent",
       "properties": {
+        "gemmaAgent.apiProtocol": {
+          "type": "string",
+          "default": "ollama",
+          "enum": [
+            "ollama",
+            "openai-compatible"
+          ],
+          "enumDescriptions": [
+            "Ollama native API (model download, warm-up, lifecycle management)",
+            "OpenAI-compatible API (LM Studio, Jan, llama.cpp llama-server, vLLM, LocalAI)"
+          ],
+          "description": "Which local AI server protocol to use"
+        },
         "gemmaAgent.ollamaUrl": {
           "type": "string",
           "default": "http://localhost:11434",
-          "description": "Ollama server URL"
+          "description": "Server URL — Ollama or any OpenAI-compatible local server (LM Studio :1234, Jan :1337, llama-server :8080)"
+        },
+        "gemmaAgent.completionModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model to use for inline completion (empty = use the main model). A small/fast model here keeps ghost-text snappy."
         },
         "gemmaAgent.model": {
           "type": "string",
@@ -168,7 +224,11 @@
         "gemmaAgent.ollamaOnExit": {
           "type": "string",
           "default": "keep",
-          "enum": ["ask", "keep", "stop"],
+          "enum": [
+            "ask",
+            "keep",
+            "stop"
+          ],
           "enumDescriptions": [
             "Ask when VS Code closes (only if we started Ollama)",
             "Keep Ollama running in the background",
@@ -186,7 +246,11 @@
         "gemmaAgent.agentRequireApproval": {
           "type": "string",
           "default": "commands",
-          "enum": ["commands", "commandsAndWrites", "never"],
+          "enum": [
+            "commands",
+            "commandsAndWrites",
+            "never"
+          ],
           "enumDescriptions": [
             "Ask before the agent runs shell commands",
             "Ask before shell commands AND file create/edit operations",
@@ -203,8 +267,15 @@
         },
         "gemmaAgent.completionLanguages": {
           "type": "object",
-          "additionalProperties": { "type": "boolean" },
-          "default": { "*": true, "markdown": false, "plaintext": false, "scminput": false },
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {
+            "*": true,
+            "markdown": false,
+            "plaintext": false,
+            "scminput": false
+          },
           "description": "Enable/disable inline completion per language id. \"*\" is the default for unlisted languages."
         },
         "gemmaAgent.completionAlternatives": {
@@ -254,7 +325,9 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run bundle",
+    "bundle": "node esbuild.js",
+    "bundle:watch": "node esbuild.js --watch",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
@@ -263,6 +336,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.3.0"
   }
 }

@@ -39,6 +39,10 @@
   let currentModel = '';
   let popoverOpen = false;
   let userScrolledUp = false;
+  let capabilities = { canPull: true, canWarmup: true, canUnload: true, canStartStopServer: true, canListAvailable: true };
+  let serverState = 'unknown';
+  let pulls = /** @type {Record<string,{status:string,percent?:number}>} */ ({});
+  let recommendedModel = 'gemma4:e4b';
 
   /** @type {Array<{name: string, description: string}>} */
   let slashCommands = [];
@@ -307,7 +311,7 @@
       });
     }
 
-    if (availableModels.length > 0) {
+    if (capabilities.canListAvailable && availableModels.length > 0) {
       const header = document.createElement('div');
       header.className = 'popover-section-header';
       header.textContent = '⬇ Available to download';
@@ -316,21 +320,31 @@
       availableModels.forEach((m) => {
         const opt = document.createElement('div');
         opt.className = 'model-option available';
-        opt.innerHTML = `<span class="model-dot available-dot"></span><span>${m}</span><button class="pull-btn" title="ollama pull ${m}">Download</button>`;
-        opt.querySelector('.pull-btn')?.addEventListener('click', (e) => {
-          e.stopPropagation();
-          modelPopover.classList.remove('open');
-          popoverOpen = false;
-          vscode.postMessage({ type: 'pullModel', model: m });
-        });
+        const job = pulls[m];
+        if (job) {
+          const pct = typeof job.percent === 'number' ? ` ${job.percent}%` : '';
+          opt.innerHTML = `<span class="model-dot available-dot"></span><span>${m}</span>` +
+            `<span class="pull-status">${escapeHtml(job.status)}${pct}</span>` +
+            `<button class="pull-btn cancel" title="Cancel">✕</button>`;
+          opt.querySelector('.pull-btn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'cancelPull', model: m });
+          });
+        } else {
+          opt.innerHTML = `<span class="model-dot available-dot"></span><span>${m}</span><button class="pull-btn" title="Download ${m}">Download</button>`;
+          opt.querySelector('.pull-btn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'pullModel', model: m });
+          });
+        }
         modelPopover.appendChild(opt);
       });
     }
 
-    if (installedModels.length === 0 && availableModels.length === 0) {
+    if (installedModels.length === 0 && (!capabilities.canListAvailable || availableModels.length === 0)) {
       const empty = document.createElement('div');
       empty.className = 'popover-section-header';
-      empty.textContent = 'Ollama offline';
+      empty.textContent = serverState === 'ready' ? 'No models' : 'Server not connected';
       modelPopover.appendChild(empty);
     }
   }
@@ -347,9 +361,18 @@
 
   // ── Ollama banner ─────────────────────────────────────
   startOllamaBtn.addEventListener('click', () => {
-    startOllamaBtn.textContent = '⏳ Starting…';
-    startOllamaBtn.disabled = true;
-    vscode.postMessage({ type: 'startOllama' });
+    const action = startOllamaBtn.dataset.action || 'startOllama';
+    if (action === 'installServer') {
+      vscode.postMessage({ type: 'installServer' });
+    } else if (action === 'pullRecommended') {
+      vscode.postMessage({ type: 'pullModel', model: recommendedModel });
+    } else if (action === 'refreshModels') {
+      vscode.postMessage({ type: 'refreshModels' });
+    } else {
+      startOllamaBtn.textContent = '⏳ Starting…';
+      startOllamaBtn.disabled = true;
+      vscode.postMessage({ type: 'startOllama' });
+    }
   });
 
   // ── Feature pills ─────────────────────────────────────
@@ -366,16 +389,29 @@
     const msg = e.data;
     switch (msg.type) {
       case 'init':
-        installedModels = msg.installedModels ?? [];
-        availableModels = msg.availableModels ?? [];
-        currentModel = msg.currentModel ?? '';
-        modelBadge.textContent = currentModel || '…';
         applyFeatures(msg.features);
-        setOllamaStatus(msg.ollamaRunning);
         setAgentMode(msg.agentMode);
         slashCommands = msg.slashCommands ?? [];
         refreshBtn.textContent = '⟳';
         refreshBtn.disabled = false;
+        break;
+      case 'backendState':
+        installedModels = msg.installedModels ?? [];
+        availableModels = msg.availableModels ?? [];
+        currentModel = msg.currentModel ?? '';
+        modelBadge.textContent = currentModel || '…';
+        capabilities = msg.capabilities ?? capabilities;
+        serverState = msg.serverState ?? 'unknown';
+        pulls = msg.pulls ?? {};
+        recommendedModel = msg.recommendedModel ?? recommendedModel;
+        applyBackendState();
+        if (popoverOpen) renderPopover();
+        break;
+      case 'pullDone':
+        if (!msg.ok && msg.error) appendError('Download failed: ' + msg.error);
+        break;
+      case 'detectedServers':
+        // reserved for the setup wizard (Faz 3)
         break;
       case 'settingsUpdate':
         if (msg.currentModel && msg.currentModel !== currentModel) {
@@ -481,6 +517,28 @@
   function setOllamaStatus(running) {
     ollamaBanner.style.display = running ? 'none' : 'flex';
     if (running) { startOllamaBtn.textContent = '▶ Start'; startOllamaBtn.disabled = false; }
+  }
+
+  /** Render banner + header buttons from the current backend state/capabilities. */
+  function applyBackendState() {
+    const ready = serverState === 'ready';
+    ollamaBanner.style.display = ready ? 'none' : 'flex';
+    // Capability-gated header buttons
+    stopOllamaBtn.style.display = capabilities.canStartStopServer ? '' : 'none';
+    if (!ready) {
+      const statusEl = document.getElementById('ollamaStatus');
+      const startEl = startOllamaBtn;
+      let label = '⚠ Server not reachable';
+      let action = '▶ Start';
+      let actionMsg = 'startOllama';
+      if (serverState === 'not-installed') { label = '⚠ No local AI server installed'; action = '⬇ Install'; actionMsg = 'installServer'; }
+      else if (serverState === 'no-models') { label = '⚠ No models — download one'; action = '⬇ ' + recommendedModel; actionMsg = 'pullRecommended'; }
+      else if (!capabilities.canStartStopServer) { action = '↻ Retry'; actionMsg = 'refreshModels'; }
+      if (statusEl) statusEl.textContent = label;
+      startEl.textContent = action;
+      startEl.disabled = false;
+      startEl.dataset.action = actionMsg;
+    }
   }
 
   function setAgentMode(enabled) {

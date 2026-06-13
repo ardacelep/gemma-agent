@@ -1,12 +1,15 @@
 import * as vscode from 'vscode';
-import { DEFAULT_MODEL, OllamaMessage, describeOllamaError, isOllamaRunning, listModels, ollamaChat, unloadModel, warmupModel } from '../ollama/client';
-import { computeBudget, fitMessages } from '../ollama/contextWindow';
+import { DEFAULT_MODEL, OllamaMessage, describeOllamaError, ollamaChat, unloadModel, warmupModel } from '../llm/client';
+import { computeBudget, fitMessages } from '../llm/contextWindow';
+import { BackendService } from '../llm/backendService';
 import { AgentHooks, runAgentLoop } from '../agent/agentLoop';
 import { Checkpoint } from '../agent/checkpoints';
 import { ToolCall } from '../agent/tools';
 import { getNonce, getWebviewUri } from '../webview/utils';
 
 const STATIC_MODELS = ['gemma4:e4b', 'gemma4:e2b', 'gemma4:9b', 'gemma4:12b', 'gemma4:27b', 'gemma3:1b', 'gemma3:4b', 'gemma3:12b', 'gemma3:27b', 'gemma3n:e2b', 'gemma3n:e4b'];
+
+export const CHAT_VIEW_ID = 'gemmaAgent.chatView';
 
 // ── Persisted chat history ──────────────────────────────────
 const HISTORY_KEY = 'gemmaAgent.chatHistory.v1';
@@ -36,8 +39,10 @@ const CHAT_SYSTEM_PROMPT =
   '- Do not offer multiple options; give the best solution directly.\n' +
   '- Always respond in the same language the user writes in.';
 
-export class GemmaChatProvider {
-  private panel?: vscode.WebviewPanel;
+export class GemmaChatProvider implements vscode.WebviewViewProvider {
+  private view?: vscode.WebviewView;
+  private viewReady?: Promise<void>;
+  private resolveViewReady?: () => void;
   private history: OllamaMessage[] = [];
   private activeAbort?: AbortController;
   private warmupAbort?: AbortController;
@@ -48,9 +53,15 @@ export class GemmaChatProvider {
   private lastCheckpoint?: Checkpoint;
   private fileListCache?: { ts: number; files: string[] };
 
-  constructor(private readonly context: vscode.ExtensionContext) {
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly backend: BackendService
+  ) {
     this.extensionUri = context.extensionUri;
     this.history = this.loadHistory();
+    this.viewReady = new Promise((r) => { this.resolveViewReady = r; });
+    // Keep the webview in sync with backend connectivity
+    context.subscriptions.push(this.backend.onDidChange(() => this.pushBackendState()));
   }
 
   // ── History persistence ─────────────────────────────────
@@ -80,28 +91,20 @@ export class GemmaChatProvider {
     void this.context.workspaceState.update(HISTORY_KEY, undefined);
   }
 
-  /** Open panel if not open, or bring it to front. */
+  /** Reveal the chat view in the sidebar. */
   openOrFocus(): void {
-    if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Beside, true);
-      return;
-    }
+    void vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`);
+  }
 
-    this.panel = vscode.window.createWebviewPanel(
-      'gemmaAgent.chat',
-      'Gemma Agent',
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
-      }
-    );
+  resolveWebviewView(view: vscode.WebviewView): void {
+    this.view = view;
+    view.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
+    };
+    view.webview.html = this.buildHtml(view.webview);
 
-    this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'icon.svg');
-    this.panel.webview.html = this.buildHtml(this.panel.webview);
-
-    this.panel.webview.onDidReceiveMessage(async (msg) => {
+    view.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
         case 'sendMessage':   await this.handleUserMessage(msg.text, msg.contexts); break;
         case 'clearHistory':
@@ -134,19 +137,32 @@ export class GemmaChatProvider {
           this.agentMode = !this.agentMode;
           this.post({ type: 'agentMode', enabled: this.agentMode });
           break;
-        case 'refreshModels': await this.sendInitState(); break;
+        case 'refreshModels': await this.backend.refresh(); break;
         case 'stopOllama':
           await vscode.commands.executeCommand('gemmaAgent.stopOllama');
-          await this.sendInitState();
+          await this.backend.refresh();
           break;
         case 'pullModel':
-          await vscode.commands.executeCommand('gemmaAgent.pullModel', msg.model);
+          await this.pullModel(msg.model as string);
+          break;
+        case 'cancelPull':
+          this.backend.cancelPull(msg.model as string);
           break;
         case 'startOllama':
           await vscode.commands.executeCommand('gemmaAgent.startOllama');
-          // Command itself polls for readiness; refresh UI once it returns
-          await this.sendInitState();
+          await this.backend.refresh();
           break;
+        case 'installServer':
+          await vscode.commands.executeCommand('gemmaAgent.installServer');
+          break;
+        case 'selectProviderPreset':
+          await this.applyProviderPreset(msg.preset as string);
+          break;
+        case 'detectServers': {
+          const found = await this.backend.detectServers();
+          this.post({ type: 'detectedServers', servers: found });
+          break;
+        }
         case 'regenerate':
           // Remove the last assistant + user pair; handleUserMessage re-adds the user turn
           if (this.history.length >= 2 && this.history[this.history.length - 1].role === 'assistant') {
@@ -162,9 +178,11 @@ export class GemmaChatProvider {
     const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('gemmaAgent')) this.sendCurrentSettings();
     });
+    this.context.subscriptions.push(configListener);
 
-    this.panel.onDidDispose(() => {
-      this.panel = undefined;
+    view.onDidDispose(() => {
+      this.view = undefined;
+      this.viewReady = new Promise((r) => { this.resolveViewReady = r; });
       this.sessionAutoApprove = false;
       // Resolve any approval the loop is still waiting on
       for (const resolve of this.pendingApprovals.values()) resolve('deny');
@@ -172,34 +190,45 @@ export class GemmaChatProvider {
       configListener.dispose();
     });
 
-    setTimeout(async () => {
-      await this.sendInitState();
-      if (this.history.length > 0) {
-        this.post({ type: 'history', messages: this.history });
-      }
-    }, 150);
+    // Initial paint
+    void this.sendInitState();
+    if (this.history.length > 0) {
+      this.post({ type: 'history', messages: this.history });
+    }
+    this.resolveViewReady?.();
   }
 
   private async sendInitState(): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration('gemmaAgent');
-    const currentModel = cfg.get<string>('model', DEFAULT_MODEL);
-    const running = await isOllamaRunning();
-    const fetched = running ? await listModels() : [];
-
-    const installedSet = new Set(fetched);
-    const installedModels = fetched.filter((m) => m.includes('gemma'));
-    // Models in static list that are NOT installed
-    const availableModels = STATIC_MODELS.filter((m) => !installedSet.has(m));
-
     this.post({
       type: 'init',
-      installedModels,
-      availableModels,
-      currentModel,
       features: this.currentFeatures(),
-      ollamaRunning: running,
       agentMode: this.agentMode,
       slashCommands: SLASH_COMMANDS.map(({ name, description }) => ({ name, description })),
+    });
+    this.pushBackendState();
+  }
+
+  /** Push current backend connectivity + model lists to the webview. */
+  private pushBackendState(): void {
+    const s = this.backend.state;
+    const installedSet = new Set(s.models);
+    const installedModels = s.models;
+    const availableModels = s.capabilities.canListAvailable
+      ? STATIC_MODELS.filter((m) => !installedSet.has(m))
+      : [];
+    this.post({
+      type: 'backendState',
+      serverState: s.serverState,
+      protocol: s.protocol,
+      serverInstalled: s.serverInstalled,
+      capabilities: s.capabilities,
+      currentModel: s.activeModel,
+      installedModels,
+      availableModels,
+      pulls: s.pulls,
+      recommendedModel: DEFAULT_MODEL,
+      // legacy field still read by the current webview banner
+      ollamaRunning: s.serverState === 'ready',
     });
   }
 
@@ -286,6 +315,33 @@ export class GemmaChatProvider {
     }
   }
 
+  /** Download a model with streamed progress (Ollama only). */
+  private async pullModel(model: string): Promise<void> {
+    if (!model) return;
+    try {
+      await this.backend.pull(model);
+      this.post({ type: 'pullDone', model, ok: true });
+    } catch (err) {
+      this.post({ type: 'pullDone', model, ok: false, error: describeOllamaError(err) });
+    }
+  }
+
+  /** Apply a provider preset (sets apiProtocol + ollamaUrl together). */
+  private async applyProviderPreset(preset: string): Promise<void> {
+    const presets: Record<string, { protocol: string; url: string }> = {
+      ollama:    { protocol: 'ollama', url: 'http://localhost:11434' },
+      lmstudio:  { protocol: 'openai-compatible', url: 'http://localhost:1234' },
+      jan:       { protocol: 'openai-compatible', url: 'http://localhost:1337' },
+      llamacpp:  { protocol: 'openai-compatible', url: 'http://localhost:8080' },
+    };
+    const p = presets[preset];
+    if (!p) return;
+    const cfg = vscode.workspace.getConfiguration('gemmaAgent');
+    await cfg.update('apiProtocol', p.protocol, vscode.ConfigurationTarget.Global);
+    await cfg.update('ollamaUrl', p.url, vscode.ConfigurationTarget.Global);
+    await this.backend.refresh();
+  }
+
   /** Workspace file list for #file references — cached for 10 s. */
   private async sendFileList(query: string): Promise<void> {
     const now = Date.now();
@@ -340,10 +396,16 @@ export class GemmaChatProvider {
     text: string,
     contexts?: Array<{ name: string; content: string; lang: string }>
   ): Promise<void> {
-    if (!this.panel) return;
+    if (!this.view) return;
 
-    const running = await isOllamaRunning();
-    if (!running) { this.postError('Ollama is not running. Click ▶ Start in the banner above or run `ollama serve`.'); return; }
+    if (this.backend.state.serverState !== 'ready') {
+      await this.backend.refresh();
+      const st: string = this.backend.state.serverState;
+      if (st !== 'ready') {
+        this.postError('The local AI server is not ready. Use the setup panel above to connect a server and load a model.');
+        return;
+      }
+    }
 
     // Slash commands: expand /name into its prompt template and
     // auto-attach the active selection/file when nothing was attached
@@ -491,11 +553,15 @@ export class GemmaChatProvider {
   }
 
   async sendToChat(prompt: string, code: string): Promise<void> {
-    this.openOrFocus();
-    await new Promise((r) => setTimeout(r, 350));
     const editor = vscode.window.activeTextEditor;
     const lang = editor?.document.languageId ?? 'code';
     const fileName = editor ? vscode.workspace.asRelativePath(editor.document.uri) : 'selection';
+    this.openOrFocus();
+    // Wait for the view to resolve so the message isn't dropped on first open
+    await Promise.race([
+      this.viewReady ?? Promise.resolve(),
+      new Promise((r) => setTimeout(r, 2000)),
+    ]);
     await this.handleUserMessage(prompt, [{ name: fileName, content: code, lang }]);
   }
 
@@ -504,7 +570,7 @@ export class GemmaChatProvider {
     if (editor) editor.edit((eb) => eb.replace(editor.selection, code));
   }
 
-  private post(msg: Record<string, unknown>): void { this.panel?.webview.postMessage(msg); }
+  private post(msg: Record<string, unknown>): void { this.view?.webview.postMessage(msg); }
   private postError(message: string): void { this.post({ type: 'error', text: message }); }
 
   private buildHtml(webview: vscode.Webview): string {

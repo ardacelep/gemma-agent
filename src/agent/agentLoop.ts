@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { OllamaMessage, ollamaChat } from '../ollama/client';
-import { computeBudget, fitMessages } from '../ollama/contextWindow';
+import { OllamaMessage, ollamaChat } from '../llm/client';
+import { computeBudget, fitMessages } from '../llm/contextWindow';
 import { executeTool, ToolCall, ToolName } from './tools';
 import { FENCED_TOOL_RE, TOOL_CALL_RE, parseToolCall } from './toolCallParser';
 

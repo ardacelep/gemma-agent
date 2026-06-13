@@ -4,23 +4,32 @@ import * as cp from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { GemmaCompletionProvider } from './providers/completionProvider';
-import { GemmaChatProvider } from './providers/chatProvider';
+import { CHAT_VIEW_ID, GemmaChatProvider } from './providers/chatProvider';
 import { GemmaCodeActionProvider, registerCodeActionCommands } from './providers/codeActionProvider';
 import { registerTerminalCommands } from './providers/terminalProvider';
 import { registerScmCommands } from './providers/scmProvider';
-import { isOllamaRunning, listModels } from './ollama/client';
+import { isOllamaRunning, listModels } from './llm/client';
+import { BackendService } from './llm/backendService';
 import { inlineEdit, registerInlineEdit } from './providers/inlineEditProvider';
 import { StatusBarManager } from './statusBar';
 
 let ollamaStartedByUs = false;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const statusBar = new StatusBarManager();
+  const backend = new BackendService();
+  backend.register(context);
+
+  const statusBar = new StatusBarManager(backend);
   statusBar.register(context);
 
   await autoSelectModel();
 
-  const chatProvider = new GemmaChatProvider(context);
+  const chatProvider = new GemmaChatProvider(context, backend);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, chatProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
 
   const editorCfg = vscode.workspace.getConfiguration('editor');
   if (!editorCfg.get<boolean>('inlineSuggest.enabled')) {
@@ -67,7 +76,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await new Promise((r) => setTimeout(r, 800));
           }
         );
-        await statusBar.refresh();
+        await backend.refresh();
         return;
       }
 
@@ -91,17 +100,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             await new Promise((r) => setTimeout(r, 800));
           }
         );
-        await statusBar.refresh();
+        await backend.refresh();
         return;
       }
 
-      const action = await vscode.window.showErrorMessage(
-        'Ollama was not found. Would you like to install it?',
-        'Download for Mac'
-      );
-      if (action === 'Download for Mac') {
-        vscode.env.openExternal(vscode.Uri.parse('https://ollama.com/download/mac'));
+      await vscode.commands.executeCommand('gemmaAgent.installServer');
+    }),
+
+    vscode.commands.registerCommand('gemmaAgent.installServer', async () => {
+      const platform = os.platform();
+      if (platform === 'linux') {
+        const choice = await vscode.window.showInformationMessage(
+          'Install Ollama on Linux by running this command in a terminal:',
+          'Copy install command',
+          'Open download page'
+        );
+        if (choice === 'Copy install command') {
+          await vscode.env.clipboard.writeText('curl -fsSL https://ollama.com/install.sh | sh');
+          vscode.window.showInformationMessage('Install command copied to clipboard.');
+        } else if (choice === 'Open download page') {
+          vscode.env.openExternal(vscode.Uri.parse('https://ollama.com/download/linux'));
+        }
+        return;
       }
+      const url = platform === 'win32'
+        ? 'https://ollama.com/download/windows'
+        : 'https://ollama.com/download/mac';
+      vscode.env.openExternal(vscode.Uri.parse(url));
     }),
 
     vscode.commands.registerCommand('gemmaAgent.pullModel', async (modelName?: string) => {
@@ -124,7 +149,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('gemmaAgent.stopOllama', async () => {
       await stopOllama();
       ollamaStartedByUs = false;
-      await statusBar.refresh();
+      await backend.refresh();
     }),
 
     vscode.commands.registerCommand('gemmaAgent.toggleCompletion', () => {
@@ -132,7 +157,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const current = cfg.get<boolean>('completionEnabled', true);
       cfg.update('completionEnabled', !current, vscode.ConfigurationTarget.Global);
       vscode.window.showInformationMessage(`Gemma inline completion: ${!current ? 'on' : 'off'}`);
-      void statusBar.refresh();
     })
   );
 }

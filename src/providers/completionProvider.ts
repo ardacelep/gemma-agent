@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ollamaGenerate } from '../ollama/client';
+import { ollamaGenerate } from '../llm/client';
 import { clean, isCommentLine } from './completionClean';
 
 function buildPrompt(doc: vscode.TextDocument, position: vscode.Position): string {

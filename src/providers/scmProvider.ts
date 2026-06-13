@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
-import { OllamaMessage, describeOllamaError, isOllamaRunning, ollamaChat } from '../ollama/client';
+import { OllamaMessage, describeOllamaError, isOllamaRunning, ollamaChat } from '../llm/client';
 import { capDiff, cleanupCommitMessage } from './scmUtils';
 
 // Minimal surface of the built-in Git extension API (getAPI(1))

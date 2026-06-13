@@ -1,23 +1,20 @@
 import * as vscode from 'vscode';
-import { DEFAULT_MODEL, isOllamaRunning } from './ollama/client';
-
-const BACKOFF_START_MS = 5_000;
-const BACKOFF_MAX_MS = 60_000;
-const CONNECTED_POLL_MS = 120_000;
+import { BackendService, BackendState } from './llm/backendService';
 
 /**
- * Status bar item with event-driven refresh instead of fixed polling:
- * refresh() runs on activation, config changes, window focus and after
- * start/stop commands. While disconnected it retries with backoff
- * (5s → 10s → … → 60s); while connected it only re-checks every 2 min.
+ * Status bar item — a pure renderer of BackendService state. All polling and
+ * connectivity logic lives in BackendService so the bar, the chat banner and
+ * the setup wizard can never disagree.
  */
 export class StatusBarManager {
   private readonly item: vscode.StatusBarItem;
-  private timer?: ReturnType<typeof setTimeout>;
-  private backoffMs = BACKOFF_START_MS;
-  private refreshing = false;
+  /** Temporary hint that overrides the normal text for a few seconds. */
+  private hintTimer?: ReturnType<typeof setTimeout>;
+  private busy = false;
+  private busyTimer?: ReturnType<typeof setTimeout>;
+  private lastHintAt = 0;
 
-  constructor() {
+  constructor(private readonly backend: BackendService) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.item.command = 'gemmaAgent.openChat';
   }
@@ -25,61 +22,63 @@ export class StatusBarManager {
   register(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
       this.item,
-      { dispose: () => this.stopTimer() },
-      vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('gemmaAgent')) void this.refresh();
-      }),
-      vscode.window.onDidChangeWindowState((state) => {
-        if (state.focused) void this.refresh();
-      })
+      this.backend.onDidChange((s) => this.render(s)),
+      { dispose: () => { if (this.hintTimer) clearTimeout(this.hintTimer); if (this.busyTimer) clearTimeout(this.busyTimer); } }
     );
-    void this.refresh();
+    this.render(this.backend.state);
   }
 
-  async refresh(): Promise<void> {
-    if (this.refreshing) return;
-    this.refreshing = true;
-    this.stopTimer();
-    try {
-      const running = await isOllamaRunning();
-      this.render(running);
-      this.scheduleNext(running);
-    } finally {
-      this.refreshing = false;
+  /** Briefly flash a clickable hint (rate-limited to once per 30s). */
+  flashHint(text: string, command: string, durationMs = 8000): void {
+    const now = Date.now();
+    if (now - this.lastHintAt < 30_000) return;
+    this.lastHintAt = now;
+    if (this.hintTimer) clearTimeout(this.hintTimer);
+    this.item.text = text;
+    this.item.command = command;
+    this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    this.item.show();
+    this.hintTimer = setTimeout(() => {
+      this.hintTimer = undefined;
+      this.item.command = 'gemmaAgent.openChat';
+      this.render(this.backend.state);
+    }, durationMs);
+  }
+
+  /** Show a spinner while a completion request is in flight (debounced). */
+  setBusy(on: boolean): void {
+    if (on) {
+      if (this.busyTimer) return;
+      this.busyTimer = setTimeout(() => { this.busy = true; this.render(this.backend.state); }, 300);
+    } else {
+      if (this.busyTimer) { clearTimeout(this.busyTimer); this.busyTimer = undefined; }
+      if (this.busy) {
+        setTimeout(() => { this.busy = false; this.render(this.backend.state); }, 200);
+      }
     }
   }
 
-  private render(running: boolean): void {
+  private render(s: BackendState): void {
+    if (this.hintTimer) return; // a hint is currently showing
     const cfg = vscode.workspace.getConfiguration('gemmaAgent');
-    const model = cfg.get<string>('model', DEFAULT_MODEL);
+    const model = s.activeModel || cfg.get<string>('model', 'gemma4:e4b');
     const completionOn = cfg.get<boolean>('completionEnabled', true);
 
-    if (running) {
-      this.item.text = `$(sparkle) Gemma ${model}${completionOn ? '' : ' [off]'}`;
-      this.item.tooltip = `Ollama running — ${model}\nClick to open chat`;
+    if (s.serverState === 'ready') {
+      const icon = this.busy ? '$(loading~spin)' : '$(sparkle)';
+      this.item.text = `${icon} Gemma ${model}${completionOn ? '' : ' [off]'}`;
+      this.item.tooltip = `Local AI connected — ${model}\nClick to open Gemma`;
       this.item.backgroundColor = undefined;
     } else {
-      this.item.text = '$(warning) Gemma: Not connected';
-      this.item.tooltip = 'Ollama is not running — click to open chat and start it';
+      const label = s.serverState === 'no-models'
+        ? 'Gemma: no models'
+        : s.serverState === 'not-installed'
+        ? 'Gemma: set up'
+        : 'Gemma: not connected';
+      this.item.text = `$(warning) ${label}`;
+      this.item.tooltip = 'Click to open Gemma and finish setup';
       this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     }
     this.item.show();
-  }
-
-  private scheduleNext(running: boolean): void {
-    if (running) {
-      this.backoffMs = BACKOFF_START_MS;
-      this.timer = setTimeout(() => void this.refresh(), CONNECTED_POLL_MS);
-    } else {
-      this.timer = setTimeout(() => void this.refresh(), this.backoffMs);
-      this.backoffMs = Math.min(this.backoffMs * 2, BACKOFF_MAX_MS);
-    }
-  }
-
-  private stopTimer(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
   }
 }
