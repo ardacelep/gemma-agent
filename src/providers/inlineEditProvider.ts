@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { OllamaMessage, describeOllamaError, isOllamaRunning, ollamaChat } from '../llm/client';
+import { getInstructionSuffix } from '../llm/instructions';
 
 /**
  * Inline edit: streams the model's rewrite directly into the editor as one
@@ -176,7 +177,7 @@ export async function inlineEdit(editor: vscode.TextEditor): Promise<void> {
 
 async function streamResponse(prompt: string, signal: AbortSignal): Promise<void> {
   const messages: OllamaMessage[] = [
-    { role: 'system', content: SYSTEM },
+    { role: 'system', content: SYSTEM + getInstructionSuffix() },
     { role: 'user', content: prompt },
   ];
 

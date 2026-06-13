@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { DEFAULT_MODEL, OllamaMessage, describeOllamaError, ollamaChat, unloadModel, warmupModel } from '../llm/client';
 import { computeBudget, fitMessages } from '../llm/contextWindow';
+import { getInstructionSuffix } from '../llm/instructions';
 import { BackendService } from '../llm/backendService';
 import { AgentHooks, runAgentLoop } from '../agent/agentLoop';
 import { Checkpoint } from '../agent/checkpoints';
@@ -444,8 +445,9 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
     const cfg = vscode.workspace.getConfiguration('gemmaAgent');
     const budget = computeBudget(cfg.get<number>('numCtx', 8192), cfg.get<number>('maxTokens', 4096));
     // Trim a copy — this.history keeps the full transcript for the UI and storage
+    const systemPrompt = CHAT_SYSTEM_PROMPT + getInstructionSuffix();
     const { messages, droppedCount } = fitMessages(
-      [{ role: 'system', content: CHAT_SYSTEM_PROMPT }, ...this.history],
+      [{ role: 'system', content: systemPrompt }, ...this.history],
       budget
     );
     if (droppedCount > 0) this.post({ type: 'contextTrimmed', count: droppedCount });

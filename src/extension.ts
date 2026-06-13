@@ -10,6 +10,7 @@ import { registerTerminalCommands } from './providers/terminalProvider';
 import { registerScmCommands } from './providers/scmProvider';
 import { isOllamaRunning, listModels } from './llm/client';
 import { BackendService } from './llm/backendService';
+import { registerInstructions } from './llm/instructions';
 import { inlineEdit, registerInlineEdit } from './providers/inlineEditProvider';
 import { StatusBarManager } from './statusBar';
 
@@ -18,6 +19,7 @@ let ollamaStartedByUs = false;
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const backend = new BackendService();
   backend.register(context);
+  registerInstructions(context);
 
   const statusBar = new StatusBarManager(backend);
   statusBar.register(context);

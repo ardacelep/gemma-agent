@@ -176,6 +176,12 @@
           "default": "",
           "description": "Model to use for inline completion (empty = use the main model). A small/fast model here keeps ghost-text snappy."
         },
+        "gemmaAgent.customInstructions": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Custom instructions appended to every chat, agent and inline-edit system prompt. You can also create a .gemma/rules.md file in your workspace."
+        },
         "gemmaAgent.model": {
           "type": "string",
           "default": "gemma4:e4b",

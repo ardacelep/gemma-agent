@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { OllamaMessage, ollamaChat } from '../llm/client';
 import { computeBudget, fitMessages } from '../llm/contextWindow';
+import { getInstructionSuffix } from '../llm/instructions';
 import { executeTool, ToolCall, ToolName } from './tools';
 import { FENCED_TOOL_RE, TOOL_CALL_RE, parseToolCall } from './toolCallParser';
 
@@ -84,7 +85,7 @@ export async function* runAgentLoop(
   const cleanedMessage = userMessage.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
 
   const messages: OllamaMessage[] = [
-    { role: 'system', content: AGENT_SYSTEM_PROMPT },
+    { role: 'system', content: AGENT_SYSTEM_PROMPT + getInstructionSuffix() },
     ...history,
     { role: 'user', content: cleanedMessage },
   ];
