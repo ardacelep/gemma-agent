@@ -4,6 +4,18 @@ GitHub Copilot'ı kaliteli yapan özelliklerin araştırılmasıyla oluşturulmu
 
 > **Son güncelleme (2026-06):** Tüm P1 maddeleri + seçili P2'ler uygulandı (aşağıda ✅ işaretli).
 > UI dili İngilizce'ye taşındı; model, kullanıcının yazdığı dilde yanıt verir.
+>
+> **2. Tur (Round 2) tamamlananlar:**
+> - Backend protokol soyutlaması (`src/llm/`): Ollama **+ OpenAI-uyumlu** (LM Studio/Jan/llama.cpp/vLLM/LocalAI) → 6.x/10.x bağımsızlık.
+> - Merkezi `BackendService` (tek durum kaynağı) + rehberli **kurulum sihirbazı** (kurulu değil/çalışmıyor/model yok edge-case'leri) + native `/api/pull` progress.
+> - Chat **sidebar**'a taşındı (WebviewView); esbuild bundling.
+> - **Çoklu sohbet oturumları** (3.13 ✅, storage v2, tool kartları persist).
+> - **@workspace yerel semantik arama** (3.10 / 6.3 ✅) + `#terminal` (3.11 ✅) + shell-integration yakalama (7.3/7.4 ✅).
+> - Agent **auto-verify** (4.9 ✅) + **Copilot-Edits tarzı review** (4.7/4.10 ✅: onay öncesi diff, dosya bazlı keep/revert).
+> - **"✨ Fix with Gemma"** diagnostic quick-fix; **rules dosyası + custom instructions** (10.6 ✅); görev başına completion modeli.
+> - **Test altyapısı**: `node:test` ile 61 birim test (saf modüller vscode'suz).
+>
+> Güncel mimari/klasör yapısı için → `CLAUDE.md`. Kalan/ertelenen: tam codicon görsel geçişi (interaktif doğrulama gerektirir), NES (5.x), `semantic_search` agent tool'u.
 
 **Lejant:**
 - ✅ = Mevcut uzantıda var

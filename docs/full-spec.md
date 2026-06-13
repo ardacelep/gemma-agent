@@ -1,8 +1,20 @@
 # Gemma Agent — Tam Teknik Spesifikasyon
 
+> **⚠ Round 2 mimari güncellemesi (2026-06):** Aşağıdaki bazı bölümler 1. tur
+> yapısına (`src/ollama/client.ts`, WebviewPanel) atıf yapar. Güncel mimari:
+> - **`src/llm/` katmanı** tüm LLM trafiğini taşır: `provider.ts` (LlmProvider),
+>   `ollamaProvider.ts` + `openaiCompatProvider.ts` (Ollama **veya** OpenAI-uyumlu),
+>   `client.ts` (facade), `backendService.ts` (tek durum kaynağı), `streamParse.ts`,
+>   `contextWindow.ts`, `instructions*.ts`. `src/ollama/` kaldırıldı.
+> - Chat artık **sidebar WebviewView** (`gemmaAgent.chatView`), WebviewPanel değil.
+> - Storage **v2** çoklu oturum (`src/providers/sessionStore.ts`); tool kartları persist edilir.
+> - Yeni modüller: `agent/toolCallParser.ts`, `agent/editApply.ts`, `index/chunker.ts`,
+>   `index/workspaceIndex.ts`, `providers/previewContentProvider.ts`, saf `*Utils/*Clean` modülleri.
+> - Build: esbuild → `dist/`; `tsc → out/` test/tip içindir. **Güncel ve eksiksiz yapı: `CLAUDE.md`.**
+
 ## 1. Genel Bakış
 
-Gemma Agent, VS Code içinde Ollama aracılığıyla yerel Gemma modellerini kullanan, internet bağlantısı gerektirmeyen bir AI kodlama asistanıdır. Kullanıcı verisi hiçbir zaman dış sunucuya gönderilmez.
+Gemma Agent, VS Code içinde yerel bir model sunucusu (Ollama veya OpenAI-uyumlu) aracılığıyla çalışan, internet bağlantısı gerektirmeyen bir AI kodlama asistanıdır. Kullanıcı verisi hiçbir zaman dış sunucuya gönderilmez.
 
 > UI dili İngilizce'dir; model, kullanıcının yazdığı dilde yanıt verir (sistem promptu talimatı).
 
