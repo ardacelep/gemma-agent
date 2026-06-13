@@ -141,7 +141,163 @@ body {
   color: #fff;
 }
 
-/* ── Ollama banner ────────────────────────────────────── */
+/* ── Setup wizard ─────────────────────────────────────── */
+#setupView {
+  display: none;
+  flex: 1;
+  overflow-y: auto;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.setup-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 320px;
+  width: 100%;
+  text-align: center;
+}
+.setup-logo {
+  font-size: 34px;
+  opacity: 0.8;
+  margin-bottom: 4px;
+}
+.setup-title { font-size: 15px; font-weight: 600; }
+.setup-sub {
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+.provider-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+.provider-card:hover {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-hoverBackground);
+}
+.pc-name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.pc-badge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  padding: 1px 6px;
+  border-radius: 20px;
+}
+.pc-desc { font-size: 11px; color: var(--vscode-descriptionForeground); }
+
+.setup-btn {
+  width: 100%;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.setup-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.setup-btn.primary:hover { background: var(--vscode-button-hoverBackground); }
+.setup-btn.ghost {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border-color: var(--vscode-panel-border);
+}
+.setup-btn.ghost:hover { background: var(--vscode-toolbar-hoverBackground); }
+.setup-btn:disabled { opacity: 0.5; cursor: default; }
+.setup-link {
+  background: none;
+  border: none;
+  color: var(--vscode-textLink-foreground);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px;
+}
+.setup-link:hover { text-decoration: underline; }
+.setup-detected {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  align-items: center;
+}
+.detected-server {
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--vscode-focusBorder);
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+}
+.detected-server:hover { background: var(--vscode-list-hoverBackground); }
+
+.model-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+  align-items: stretch;
+}
+.mc-name {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.mc-progress {
+  height: 6px;
+  border-radius: 4px;
+  background: var(--vscode-panel-border);
+  overflow: hidden;
+}
+.mc-bar {
+  height: 100%;
+  background: var(--vscode-progressBar-background, #007acc);
+  transition: width 200ms ease;
+}
+.mc-status {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  text-align: center;
+}
+.pull-status {
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  margin-left: auto;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+
+/* ── Ollama banner (legacy, hidden) ───────────────────── */
 #ollamaBanner {
   display: none;
   align-items: center;

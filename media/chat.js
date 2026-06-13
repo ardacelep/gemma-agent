@@ -13,8 +13,10 @@
   const stopOllamaBtn  = /** @type {HTMLButtonElement} */ (document.getElementById('stopOllamaBtn'));
   const modelBadge = /** @type {HTMLButtonElement} */ (document.getElementById('modelBadge'));
   const modelPopover = /** @type {HTMLDivElement} */ (document.getElementById('modelPopover'));
-  const ollamaBanner = /** @type {HTMLDivElement} */ (document.getElementById('ollamaBanner'));
-  const startOllamaBtn = /** @type {HTMLButtonElement} */ (document.getElementById('startOllamaBtn'));
+  const setupView = /** @type {HTMLDivElement} */ (document.getElementById('setupView'));
+  const messagesWrapper = /** @type {HTMLDivElement} */ (document.getElementById('messagesWrapper'));
+  const inputArea = /** @type {HTMLDivElement} */ (document.getElementById('inputArea'));
+  const pillBar = /** @type {HTMLDivElement} */ (document.getElementById('pillBar'));
   const agentPill    = /** @type {HTMLButtonElement} */ (document.getElementById('agentPill'));
   const modeLabel    = /** @type {HTMLSpanElement} */ (document.getElementById('modeLabel'));
   const attachBtn    = /** @type {HTMLButtonElement} */ (document.getElementById('attachBtn'));
@@ -360,18 +362,21 @@
   });
 
   // ── Ollama banner ─────────────────────────────────────
-  startOllamaBtn.addEventListener('click', () => {
-    const action = startOllamaBtn.dataset.action || 'startOllama';
-    if (action === 'installServer') {
-      vscode.postMessage({ type: 'installServer' });
-    } else if (action === 'pullRecommended') {
-      vscode.postMessage({ type: 'pullModel', model: recommendedModel });
-    } else if (action === 'refreshModels') {
-      vscode.postMessage({ type: 'refreshModels' });
-    } else {
-      startOllamaBtn.textContent = '⏳ Starting…';
-      startOllamaBtn.disabled = true;
-      vscode.postMessage({ type: 'startOllama' });
+  // Setup wizard actions are delegated from rendered buttons (see renderSetup).
+  setupView.addEventListener('click', (e) => {
+    const btn = /** @type {HTMLElement} */ (e.target).closest('[data-setup-action]');
+    if (!btn) return;
+    const action = /** @type {HTMLElement} */ (btn).dataset.setupAction;
+    const value = /** @type {HTMLElement} */ (btn).dataset.value;
+    switch (action) {
+      case 'selectProvider': vscode.postMessage({ type: 'selectProviderPreset', preset: value }); break;
+      case 'install':        vscode.postMessage({ type: 'installServer' }); break;
+      case 'start':          vscode.postMessage({ type: 'startOllama' }); break;
+      case 'retry':          vscode.postMessage({ type: 'refreshModels' }); break;
+      case 'detect':         vscode.postMessage({ type: 'detectServers' }); break;
+      case 'pull':           vscode.postMessage({ type: 'pullModel', model: value }); break;
+      case 'cancelPull':     vscode.postMessage({ type: 'cancelPull', model: value }); break;
+      case 'openSettings':   vscode.postMessage({ type: 'openSettings' }); break;
     }
   });
 
@@ -408,10 +413,12 @@
         if (popoverOpen) renderPopover();
         break;
       case 'pullDone':
-        if (!msg.ok && msg.error) appendError('Download failed: ' + msg.error);
+        if (!msg.ok && msg.error && serverState !== 'ready') renderSetup();
+        if (!msg.ok && msg.error && serverState === 'ready') appendError('Download failed: ' + msg.error);
         break;
       case 'detectedServers':
-        // reserved for the setup wizard (Faz 3)
+        detectedServers = msg.servers ?? [];
+        if (serverState !== 'ready') renderSetup();
         break;
       case 'settingsUpdate':
         if (msg.currentModel && msg.currentModel !== currentModel) {
@@ -514,31 +521,96 @@
   // ── State helpers ─────────────────────────────────────
   function truncateModel(name) { return name; } // CSS handles ellipsis
 
-  function setOllamaStatus(running) {
-    ollamaBanner.style.display = running ? 'none' : 'flex';
-    if (running) { startOllamaBtn.textContent = '▶ Start'; startOllamaBtn.disabled = false; }
-  }
+  /** @type {Array<{label:string,url:string,protocol:string}>} */
+  let detectedServers = [];
 
-  /** Render banner + header buttons from the current backend state/capabilities. */
+  const PROVIDER_CARDS = [
+    { id: 'ollama', name: 'Ollama', desc: 'Recommended — manages model downloads for you', badge: 'Recommended' },
+    { id: 'lmstudio', name: 'LM Studio', desc: 'OpenAI-compatible server on :1234' },
+    { id: 'jan', name: 'Jan', desc: 'OpenAI-compatible server on :1337' },
+    { id: 'llamacpp', name: 'llama.cpp', desc: 'llama-server on :8080' },
+  ];
+
+  /** Show the chat surface or the setup wizard based on backend state. */
   function applyBackendState() {
     const ready = serverState === 'ready';
-    ollamaBanner.style.display = ready ? 'none' : 'flex';
-    // Capability-gated header buttons
+    setupView.style.display = ready ? 'none' : 'flex';
+    messagesWrapper.style.display = ready ? 'flex' : 'none';
+    inputArea.style.display = ready ? 'flex' : 'none';
+    pillBar.style.display = ready ? 'flex' : 'none';
+    // Stop-server button only makes sense for backends we can control
     stopOllamaBtn.style.display = capabilities.canStartStopServer ? '' : 'none';
-    if (!ready) {
-      const statusEl = document.getElementById('ollamaStatus');
-      const startEl = startOllamaBtn;
-      let label = '⚠ Server not reachable';
-      let action = '▶ Start';
-      let actionMsg = 'startOllama';
-      if (serverState === 'not-installed') { label = '⚠ No local AI server installed'; action = '⬇ Install'; actionMsg = 'installServer'; }
-      else if (serverState === 'no-models') { label = '⚠ No models — download one'; action = '⬇ ' + recommendedModel; actionMsg = 'pullRecommended'; }
-      else if (!capabilities.canStartStopServer) { action = '↻ Retry'; actionMsg = 'refreshModels'; }
-      if (statusEl) statusEl.textContent = label;
-      startEl.textContent = action;
-      startEl.disabled = false;
-      startEl.dataset.action = actionMsg;
+    if (!ready) renderSetup();
+  }
+
+  function renderSetup() {
+    const h = [];
+    h.push(`<div class="setup-inner">`);
+    h.push(`<div class="setup-logo">✦</div>`);
+
+    if (serverState === 'not-installed') {
+      h.push(`<div class="setup-title">Set up your local AI</div>`);
+      h.push(`<div class="setup-sub">Gemma Agent runs entirely on your machine. Pick a local AI server:</div>`);
+      h.push(`<div class="provider-cards">`);
+      for (const c of PROVIDER_CARDS) {
+        h.push(
+          `<button class="provider-card" data-setup-action="selectProvider" data-value="${c.id}">` +
+          `<span class="pc-name">${c.name}${c.badge ? `<span class="pc-badge">${c.badge}</span>` : ''}</span>` +
+          `<span class="pc-desc">${escapeHtml(c.desc)}</span></button>`
+        );
+      }
+      h.push(`</div>`);
+      h.push(`<button class="setup-btn primary" data-setup-action="install">⬇ Install Ollama</button>`);
+      h.push(`<button class="setup-btn ghost" data-setup-action="detect">🔍 Detect running servers</button>`);
+      if (detectedServers.length) {
+        h.push(`<div class="setup-detected">Found: ${detectedServers.map((s) => `<button class="detected-server" data-setup-action="selectProvider" data-value="${providerIdForUrl(s)}">${escapeHtml(s.label)}</button>`).join(' ')}</div>`);
+      }
+      h.push(`<button class="setup-link" data-setup-action="openSettings">Use a custom URL…</button>`);
+    } else if (serverState === 'not-running') {
+      h.push(`<div class="setup-title">Server not running</div>`);
+      if (capabilities.canStartStopServer) {
+        h.push(`<div class="setup-sub">Ollama is installed but not running.</div>`);
+        h.push(`<button class="setup-btn primary" data-setup-action="start">▶ Start Ollama</button>`);
+      } else {
+        h.push(`<div class="setup-sub">Start your local AI server, then retry. Expecting it at the configured URL.</div>`);
+        h.push(`<button class="setup-btn primary" data-setup-action="retry">↻ Retry connection</button>`);
+      }
+      h.push(`<button class="setup-link" data-setup-action="openSettings">Change server settings…</button>`);
+    } else if (serverState === 'no-models') {
+      h.push(`<div class="setup-title">Almost ready</div>`);
+      if (capabilities.canPull) {
+        const job = pulls[recommendedModel];
+        h.push(`<div class="setup-sub">Download a model to get started:</div>`);
+        h.push(`<div class="model-card">`);
+        h.push(`<span class="mc-name">${recommendedModel}</span>`);
+        if (job) {
+          const pct = typeof job.percent === 'number' ? job.percent : 0;
+          h.push(`<div class="mc-progress"><div class="mc-bar" style="width:${pct}%"></div></div>`);
+          h.push(`<span class="mc-status">${escapeHtml(job.status)}${typeof job.percent === 'number' ? ` ${job.percent}%` : ''}</span>`);
+          h.push(`<button class="setup-btn ghost" data-setup-action="cancelPull" data-value="${recommendedModel}">Cancel</button>`);
+        } else {
+          h.push(`<button class="setup-btn primary" data-setup-action="pull" data-value="${recommendedModel}">⬇ Download ${recommendedModel}</button>`);
+        }
+        h.push(`</div>`);
+      } else {
+        h.push(`<div class="setup-sub">Your server is running but has no model loaded. Load one in your server's UI, then retry.</div>`);
+        h.push(`<button class="setup-btn primary" data-setup-action="retry">↻ Retry</button>`);
+      }
+    } else {
+      h.push(`<div class="setup-title">Connecting…</div>`);
+      h.push(`<div class="setup-sub">Checking your local AI server.</div>`);
     }
+
+    h.push(`</div>`);
+    setupView.innerHTML = h.join('');
+  }
+
+  function providerIdForUrl(s) {
+    if (s.protocol === 'ollama') return 'ollama';
+    if (s.url.includes('1234')) return 'lmstudio';
+    if (s.url.includes('1337')) return 'jan';
+    if (s.url.includes('8080')) return 'llamacpp';
+    return 'ollama';
   }
 
   function setAgentMode(enabled) {

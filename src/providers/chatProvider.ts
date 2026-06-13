@@ -163,6 +163,9 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
           this.post({ type: 'detectedServers', servers: found });
           break;
         }
+        case 'openSettings':
+          await vscode.commands.executeCommand('workbench.action.openSettings', 'gemmaAgent');
+          break;
         case 'regenerate':
           // Remove the last assistant + user pair; handleUserMessage re-adds the user turn
           if (this.history.length >= 2 && this.history[this.history.length - 1].role === 'assistant') {
@@ -609,10 +612,7 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
     <button class="pill agent-pill" id="agentPill" title="Create files, edit, run commands">⚡ Agent</button>
   </div>
 
-  <div id="ollamaBanner">
-    <span id="ollamaStatus">⚠ Ollama not running</span>
-    <button id="startOllamaBtn">▶ Start</button>
-  </div>
+  <div id="setupView"></div>
 
   <div id="messagesWrapper">
     <div id="messages">
