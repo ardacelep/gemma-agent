@@ -388,6 +388,27 @@
   });
 
   // ── Ollama banner ─────────────────────────────────────
+  // ── Empty-state suggestion chips ──────────────────────
+  document.querySelectorAll('.suggestion-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const el = /** @type {HTMLButtonElement} */ (chip);
+      const prompt = el.dataset.prompt || '';
+      const wantsAgent = el.dataset.agent === '1';
+      if (wantsAgent && !agentPill.classList.contains('active')) {
+        vscode.postMessage({ type: 'toggleAgentMode' });
+      }
+      if (prompt.endsWith(' ') || prompt === '@workspace ') {
+        // Prefill (let the user finish typing) instead of sending
+        inputEl.value = prompt;
+        inputEl.focus();
+        updateCmdPopover();
+      } else {
+        inputEl.value = prompt;
+        sendMessage();
+      }
+    });
+  });
+
   // ── Session controls ──────────────────────────────────
   sessionsBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSessionPopover(); });
   newChatBtn.addEventListener('click', () => { vscode.postMessage({ type: 'newSession' }); closeSessionPopover(); });

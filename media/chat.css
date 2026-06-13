@@ -574,7 +574,31 @@ body {
 }
 #emptyState .empty-icon { font-size: 32px; }
 #emptyState .empty-title { font-size: 13px; font-weight: 600; }
-#emptyState .empty-sub { font-size: 11px; text-align: center; max-width: 200px; line-height: 1.6; }
+#emptyState .empty-sub { font-size: 11px; text-align: center; max-width: 220px; line-height: 1.6; }
+#suggestionChips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  width: 100%;
+  max-width: 240px;
+  pointer-events: auto;
+}
+.suggestion-chip {
+  font-size: 11px;
+  padding: 7px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition), border-color var(--transition);
+}
+.suggestion-chip:hover {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder);
+}
 
 .message {
   display: flex;

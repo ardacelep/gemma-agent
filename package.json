@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "ardacelep",
   "license": "MIT",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/ardacelep/gemma-agent"
@@ -37,6 +38,49 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "walkthroughs": [
+      {
+        "id": "gemmaAgent.gettingStarted",
+        "title": "Get started with Gemma Agent",
+        "description": "Run an AI coding assistant entirely on your machine — no cloud, no API keys.",
+        "steps": [
+          {
+            "id": "server",
+            "title": "Install a local AI server",
+            "description": "Gemma Agent talks to a local server (Ollama, LM Studio, Jan, llama.cpp…).\n[Install Ollama](command:gemmaAgent.installServer)",
+            "media": { "markdown": "media/walkthrough/server.md" },
+            "completionEvents": ["onCommand:gemmaAgent.startOllama"]
+          },
+          {
+            "id": "model",
+            "title": "Download a model",
+            "description": "Pull a Gemma model so the assistant has a brain.\n[Pull a model](command:gemmaAgent.pullModel)",
+            "media": { "markdown": "media/walkthrough/model.md" },
+            "completionEvents": ["onCommand:gemmaAgent.pullModel"]
+          },
+          {
+            "id": "chat",
+            "title": "Open the chat",
+            "description": "Open the Gemma panel from the activity bar and ask your first question.\n[Open Gemma](command:gemmaAgent.openChat)",
+            "media": { "markdown": "media/walkthrough/chat.md" },
+            "completionEvents": ["onCommand:gemmaAgent.openChat"]
+          },
+          {
+            "id": "inlineEdit",
+            "title": "Edit code inline",
+            "description": "Select code and press the inline-edit shortcut to rewrite it in place.\n[Try inline edit](command:gemmaAgent.inlineEdit)",
+            "media": { "markdown": "media/walkthrough/inline.md" },
+            "completionEvents": ["onCommand:gemmaAgent.inlineEdit"]
+          },
+          {
+            "id": "agent",
+            "title": "Use Agent mode",
+            "description": "Switch to ⚡ Agent mode in the chat to let Gemma create files and run commands — with your approval.",
+            "media": { "markdown": "media/walkthrough/agent.md" }
+          }
+        ]
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -320,8 +364,8 @@
       },
       {
         "command": "gemmaAgent.explainCode",
-        "key": "ctrl+shift+e",
-        "mac": "cmd+shift+e",
+        "key": "ctrl+alt+e",
+        "mac": "cmd+alt+e",
         "when": "editorHasSelection"
       },
       {

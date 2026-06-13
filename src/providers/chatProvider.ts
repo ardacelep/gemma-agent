@@ -877,7 +877,13 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
       <div id="emptyState">
         <div class="empty-icon">✦</div>
         <div class="empty-title">Gemma Agent</div>
-        <div class="empty-sub">Write, explain, fix code or use ⚡ Agent mode to create files.</div>
+        <div class="empty-sub">Ask about your code, or switch to ⚡ Agent mode to create and edit files.</div>
+        <div id="suggestionChips">
+          <button class="suggestion-chip" data-prompt="/explain">Explain this file</button>
+          <button class="suggestion-chip" data-prompt="/tests">Write tests for the selection</button>
+          <button class="suggestion-chip" data-agent="1" data-prompt="Create a small TODO-list script and run it">⚡ Scaffold a TODO app</button>
+          <button class="suggestion-chip" data-prompt="@workspace ">@workspace search…</button>
+        </div>
       </div>
     </div>
     <button id="scrollToBottomBtn" title="Scroll to bottom">↓</button>

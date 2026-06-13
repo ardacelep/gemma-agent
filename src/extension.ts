@@ -66,7 +66,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await editorCfg.update('inlineSuggest.enabled', true, vscode.ConfigurationTarget.Global);
   }
 
-  const completionProvider = new GemmaCompletionProvider();
+  const completionProvider = new GemmaCompletionProvider(statusBar);
   context.subscriptions.push(
     vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, completionProvider),
     completionProvider

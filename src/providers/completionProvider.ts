@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ollamaGenerate } from '../llm/client';
 import { clean, isCommentLine } from './completionClean';
+import { StatusBarManager } from '../statusBar';
 
 function buildPrompt(doc: vscode.TextDocument, position: vscode.Position): string {
   const lang = doc.languageId;
@@ -35,6 +36,8 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
   private activeRequest: AbortController | undefined;
   /** Resolver of a superseded request — must be settled so VS Code never waits forever. */
   private pendingResolve: ((value: vscode.InlineCompletionList | null) => void) | undefined;
+
+  constructor(private readonly statusBar?: StatusBarManager) {}
 
   async provideInlineCompletionItems(
     document: vscode.TextDocument,
@@ -73,6 +76,7 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
 
       const finish = (value: vscode.InlineCompletionList | null) => {
         if (this.pendingResolve === resolve) this.pendingResolve = undefined;
+        this.statusBar?.setBusy(false);
         resolve(value);
       };
 
@@ -85,6 +89,8 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
         this.activeRequest?.abort();
         this.activeRequest = new AbortController();
 
+        const completionModel = cfg.get<string>('completionModel', '') || undefined;
+        this.statusBar?.setBusy(true);
         try {
           const prompt = buildPrompt(document, position);
           const maxTokens = cfg.get<number>('completionMaxTokens', 150);
@@ -92,6 +98,7 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
             prompt,
             system: SYSTEM,
             maxTokens,
+            model: completionModel,
             signal: this.activeRequest.signal,
           });
 
@@ -119,6 +126,7 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
                 system: SYSTEM,
                 maxTokens,
                 temperature: 0.8,
+                model: completionModel,
                 signal: this.activeRequest.signal,
               });
               const alt = clean(altRaw, linePrefix, lang);
