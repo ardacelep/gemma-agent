@@ -3,6 +3,7 @@ import { DEFAULT_MODEL, OllamaMessage, describeOllamaError, ollamaChat, unloadMo
 import { computeBudget, fitMessages } from '../llm/contextWindow';
 import { getInstructionSuffix } from '../llm/instructions';
 import { BackendService } from '../llm/backendService';
+import { getLastExecutions, hasTerminalCapture } from './terminalProvider';
 import { AgentHooks, runAgentLoop } from '../agent/agentLoop';
 import { Checkpoint } from '../agent/checkpoints';
 import { ToolCall } from '../agent/tools';
@@ -127,6 +128,7 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
         case 'undoCheckpoint': await this.undoLastCheckpoint(); break;
         case 'requestFileList': await this.sendFileList(msg.query as string); break;
         case 'attachFile': await this.attachFileContext(msg.path as string); break;
+        case 'attachTerminal': this.attachTerminalContext(); break;
         case 'stopGeneration': this.activeAbort?.abort(); break;
         case 'insertCode':    this.insertCodeToEditor(msg.code); break;
         case 'changeModel':
@@ -359,7 +361,22 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
     }
     const q = (query ?? '').toLowerCase();
     const files = this.fileListCache.files.filter((f) => f.toLowerCase().includes(q)).slice(0, 20);
-    this.post({ type: 'fileList', files });
+    // Pin a #terminal entry when we have captured shell output
+    const pinned: string[] = [];
+    if (hasTerminalCapture() && 'terminal'.startsWith(q)) {
+      pinned.push('#terminal — last command output');
+    }
+    this.post({ type: 'fileList', files: [...pinned, ...files] });
+  }
+
+  private attachTerminalContext(): void {
+    const last = getLastExecutions()[0];
+    if (!last) {
+      this.post({ type: 'contextError', message: 'No terminal command has been captured yet.' });
+      return;
+    }
+    const content = `$ ${last.command}\n(exit code ${last.exitCode})\n\n${last.output || '(no output)'}`;
+    this.post({ type: 'contextAdded', name: `terminal: ${last.command.slice(0, 40)}`, content, lang: 'text' });
   }
 
   private async attachFileContext(relPath: string): Promise<void> {

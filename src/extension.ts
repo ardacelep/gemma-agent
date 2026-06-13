@@ -6,7 +6,7 @@ import * as path from 'path';
 import { GemmaCompletionProvider } from './providers/completionProvider';
 import { CHAT_VIEW_ID, GemmaChatProvider } from './providers/chatProvider';
 import { GemmaCodeActionProvider, registerCodeActionCommands } from './providers/codeActionProvider';
-import { registerTerminalCommands } from './providers/terminalProvider';
+import { registerTerminalCapture, registerTerminalCommands } from './providers/terminalProvider';
 import { registerScmCommands } from './providers/scmProvider';
 import { isOllamaRunning, listModels } from './llm/client';
 import { BackendService } from './llm/backendService';
@@ -52,6 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   registerCodeActionCommands(context, chatProvider);
   registerTerminalCommands(context, chatProvider);
+  registerTerminalCapture(context, statusBar);
   registerInlineEdit(context);
   registerScmCommands(context);
 

@@ -101,9 +101,13 @@
     const item = cmdItems[idx];
     if (!item) return;
     if (cmdMode === 'file') {
-      // Remove the typed #partial and attach the file as a context chip
+      // Remove the typed #partial and attach the file (or terminal output) as a chip
       inputEl.value = inputEl.value.replace(FILE_REF_RE, '$1');
-      vscode.postMessage({ type: 'attachFile', path: item.name });
+      if (item.name.startsWith('#terminal')) {
+        vscode.postMessage({ type: 'attachTerminal' });
+      } else {
+        vscode.postMessage({ type: 'attachFile', path: item.name });
+      }
     } else {
       inputEl.value = '/' + item.name + ' ';
     }
