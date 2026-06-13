@@ -17,6 +17,9 @@
   const messagesWrapper = /** @type {HTMLDivElement} */ (document.getElementById('messagesWrapper'));
   const inputArea = /** @type {HTMLDivElement} */ (document.getElementById('inputArea'));
   const pillBar = /** @type {HTMLDivElement} */ (document.getElementById('pillBar'));
+  const sessionsBtn = /** @type {HTMLButtonElement} */ (document.getElementById('sessionsBtn'));
+  const newChatBtn = /** @type {HTMLButtonElement} */ (document.getElementById('newChatBtn'));
+  const sessionPopover = /** @type {HTMLDivElement} */ (document.getElementById('sessionPopover'));
   const agentPill    = /** @type {HTMLButtonElement} */ (document.getElementById('agentPill'));
   const modeLabel    = /** @type {HTMLSpanElement} */ (document.getElementById('modeLabel'));
   const attachBtn    = /** @type {HTMLButtonElement} */ (document.getElementById('attachBtn'));
@@ -45,6 +48,10 @@
   let serverState = 'unknown';
   let pulls = /** @type {Record<string,{status:string,percent?:number}>} */ ({});
   let recommendedModel = 'gemma4:e4b';
+  /** @type {Array<{id:string,title:string,updatedAt:number}>} */
+  let sessions = [];
+  let activeSessionId = '';
+  let sessionPopoverOpen = false;
 
   /** @type {Array<{name: string, description: string}>} */
   let slashCommands = [];
@@ -165,6 +172,10 @@
       closeCmdPopover();
       return;
     }
+    if (sessionPopoverOpen) {
+      closeSessionPopover();
+      return;
+    }
     if (popoverOpen) {
       modelPopover.classList.remove('open');
       popoverOpen = false;
@@ -199,6 +210,7 @@
   document.addEventListener('click', () => {
     if (attachMenuOpen) { attachMenuOpen = false; attachMenu.classList.remove('open'); }
     if (cmdPopoverOpen) closeCmdPopover();
+    if (sessionPopoverOpen) closeSessionPopover();
   });
 
   function renderChips() {
@@ -366,6 +378,11 @@
   });
 
   // ── Ollama banner ─────────────────────────────────────
+  // ── Session controls ──────────────────────────────────
+  sessionsBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSessionPopover(); });
+  newChatBtn.addEventListener('click', () => { vscode.postMessage({ type: 'newSession' }); closeSessionPopover(); });
+  sessionPopover.addEventListener('click', (e) => e.stopPropagation());
+
   // Setup wizard actions are delegated from rendered buttons (see renderSetup).
   setupView.addEventListener('click', (e) => {
     const btn = /** @type {HTMLElement} */ (e.target).closest('[data-setup-action]');
@@ -496,8 +513,13 @@
         removeThinkingIndicator();
         appendError(msg.text);
         break;
-      case 'history':
-        restoreHistory(msg.messages);
+      case 'restoreSession':
+        restoreSession(msg.entries);
+        break;
+      case 'sessionList':
+        sessions = msg.sessions ?? [];
+        activeSessionId = msg.activeId ?? '';
+        if (sessionPopoverOpen) renderSessionPopover();
         break;
       case 'contextAdded':
         attachedContexts.push({ name: msg.name, content: msg.content, lang: msg.lang });
@@ -1128,14 +1150,22 @@
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  // ── History restore ───────────────────────────────────
-  function restoreHistory(messages) {
-    if (!messages || messages.length === 0) return;
+  // ── Session restore ───────────────────────────────────
+  function restoreSession(entries) {
+    // Clear the message list and any transient run state
+    isGenerating = false;
+    setInputDisabled(false);
+    assistantBubble = null;
+    rawBuffer = '';
+    messagesEl.innerHTML = '';
+    messagesEl.appendChild(emptyState);
+    emptyState.style.display = 'flex';
+    if (!entries || entries.length === 0) return;
     hideEmpty();
-    messages.forEach((msg) => {
-      if (msg.role === 'user') {
-        appendUserMessage(msg.content);
-      } else if (msg.role === 'assistant' && msg.content) {
+    entries.forEach((e) => {
+      if (e.kind === 'user') {
+        appendUserMessage(e.content);
+      } else if (e.kind === 'assistant' && e.content) {
         const wrap = document.createElement('div');
         wrap.className = 'message assistant';
         const header = document.createElement('div');
@@ -1143,14 +1173,122 @@
         header.innerHTML = '<div class="msg-avatar">G</div><span class="msg-name">Gemma</span>';
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
-        bubble.innerHTML = renderMarkdown(msg.content);
+        bubble.innerHTML = renderMarkdown(e.content);
         wrap.appendChild(header);
         wrap.appendChild(bubble);
         messagesEl.appendChild(wrap);
         addCodeBlockButtons(bubble);
+      } else if (e.kind === 'tool') {
+        renderFinalizedToolCard(e);
+      } else if (e.kind === 'notice') {
+        appendNotice(e.text);
       }
     });
     scrollToBottom();
+  }
+
+  /** Render a persisted tool entry as a finalized card (no approval buttons). */
+  function renderFinalizedToolCard(e) {
+    const meta = TOOL_META[e.tool] ?? { emoji: '⚙', label: e.tool };
+    const card = document.createElement('div');
+    card.className = 'tool-card ' + (e.ok ? 'success' : 'failure');
+    card.innerHTML = `
+      <div class="tool-card-left">
+        <span class="tool-emoji">${meta.emoji}</span>
+        <span class="tool-name">${meta.label}</span>
+      </div>
+      <span class="tool-arg" title="${escapeHtml(e.arg)}">${escapeHtml(e.arg)}</span>
+      <span class="tool-status-badge">${e.ok ? '✓ Done' : '✗ Error'}</span>`;
+    if (e.output && e.output.length > 15) {
+      const details = document.createElement('details');
+      details.className = 'tool-output-toggle';
+      const pre = document.createElement('pre');
+      pre.className = 'tool-output-pre';
+      pre.textContent = e.output;
+      details.innerHTML = '<summary>Show output</summary>';
+      details.appendChild(pre);
+      card.appendChild(details);
+    }
+    messagesEl.appendChild(card);
+  }
+
+  // ── Session popover ───────────────────────────────────
+  function toggleSessionPopover() {
+    sessionPopoverOpen = !sessionPopoverOpen;
+    if (sessionPopoverOpen) {
+      renderSessionPopover();
+      sessionPopover.classList.add('open');
+    } else {
+      sessionPopover.classList.remove('open');
+    }
+  }
+
+  function closeSessionPopover() {
+    sessionPopoverOpen = false;
+    sessionPopover.classList.remove('open');
+  }
+
+  function renderSessionPopover() {
+    sessionPopover.innerHTML = '';
+    const header = document.createElement('div');
+    header.className = 'popover-section-header';
+    header.textContent = 'Chat sessions';
+    sessionPopover.appendChild(header);
+
+    sessions.forEach((s) => {
+      const row = document.createElement('div');
+      row.className = 'session-row' + (s.id === activeSessionId ? ' active' : '');
+      row.innerHTML =
+        `<span class="session-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</span>` +
+        `<button class="session-act rename" title="Rename">✎</button>` +
+        `<button class="session-act delete" title="Delete">🗑</button>`;
+      row.querySelector('.session-title')?.addEventListener('click', () => {
+        if (s.id !== activeSessionId) vscode.postMessage({ type: 'switchSession', id: s.id });
+        closeSessionPopover();
+      });
+      row.querySelector('.rename')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        startRename(row, s);
+      });
+      let confirmDelete = false;
+      const delBtn = row.querySelector('.delete');
+      delBtn?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!confirmDelete) {
+          confirmDelete = true;
+          delBtn.textContent = '✓?';
+          setTimeout(() => { confirmDelete = false; delBtn.textContent = '🗑'; }, 2500);
+          return;
+        }
+        vscode.postMessage({ type: 'deleteSession', id: s.id });
+      });
+      sessionPopover.appendChild(row);
+    });
+
+    const positionRect = sessionsBtn.getBoundingClientRect();
+    sessionPopover.style.top = (positionRect.bottom + 4) + 'px';
+    sessionPopover.style.right = '8px';
+  }
+
+  function startRename(row, s) {
+    const titleEl = row.querySelector('.session-title');
+    if (!titleEl) return;
+    const input = document.createElement('input');
+    input.className = 'session-rename-input';
+    input.value = s.title;
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = () => {
+      const v = input.value.trim();
+      if (v && v !== s.title) vscode.postMessage({ type: 'renameSession', id: s.id, title: v });
+      else renderSessionPopover();
+    };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); renderSessionPopover(); }
+    });
+    input.addEventListener('blur', commit);
   }
 
   function addCodeBlockButtons(bubble) {

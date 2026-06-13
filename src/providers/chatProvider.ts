@@ -7,19 +7,19 @@ import { getLastExecutions, hasTerminalCapture } from './terminalProvider';
 import { AgentHooks, runAgentLoop } from '../agent/agentLoop';
 import { Checkpoint } from '../agent/checkpoints';
 import { ToolCall } from '../agent/tools';
+import {
+  Entry, Session, StoreV2,
+  autoTitle, capStore, entriesToMessages, isDefaultTitle, migrateV1, newSession, parseStoreV2,
+} from './sessionStore';
 import { getNonce, getWebviewUri } from '../webview/utils';
 
 const STATIC_MODELS = ['gemma4:e4b', 'gemma4:e2b', 'gemma4:9b', 'gemma4:12b', 'gemma4:27b', 'gemma3:1b', 'gemma3:4b', 'gemma3:12b', 'gemma3:27b', 'gemma3n:e2b', 'gemma3n:e4b'];
 
 export const CHAT_VIEW_ID = 'gemmaAgent.chatView';
 
-// ── Persisted chat history ──────────────────────────────────
-const HISTORY_KEY = 'gemmaAgent.chatHistory.v1';
-const MAX_PERSISTED_MESSAGES = 80;
-const MAX_PERSISTED_BYTES = 512 * 1024;
-
-interface PersistedMessage { role: 'user' | 'assistant'; content: string; ts: number }
-interface PersistedChat { version: 1; savedAt: number; messages: PersistedMessage[] }
+// ── Persisted chat sessions ─────────────────────────────────
+const V1_KEY = 'gemmaAgent.chatHistory.v1';
+const SESSIONS_KEY = 'gemmaAgent.chatSessions.v2';
 
 // ── Slash commands ──────────────────────────────────────────
 interface SlashCommand { name: string; description: string; prompt?: string }
@@ -45,7 +45,8 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private viewReady?: Promise<void>;
   private resolveViewReady?: () => void;
-  private history: OllamaMessage[] = [];
+  private sessions: Session[] = [];
+  private activeId = '';
   private activeAbort?: AbortController;
   private warmupAbort?: AbortController;
   private agentMode = false;
@@ -54,43 +55,141 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
   private sessionAutoApprove = false;
   private lastCheckpoint?: Checkpoint;
   private fileListCache?: { ts: number; files: string[] };
+  /** Track the in-flight tool call so tool_result can be recorded as an entry. */
+  private pendingToolEntry?: { tool: string; arg: string };
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly backend: BackendService
   ) {
     this.extensionUri = context.extensionUri;
-    this.history = this.loadHistory();
+    this.loadStore();
     this.viewReady = new Promise((r) => { this.resolveViewReady = r; });
     // Keep the webview in sync with backend connectivity
     context.subscriptions.push(this.backend.onDidChange(() => this.pushBackendState()));
   }
 
-  // ── History persistence ─────────────────────────────────
-  private loadHistory(): OllamaMessage[] {
-    const saved = this.context.workspaceState.get<PersistedChat>(HISTORY_KEY);
-    if (!saved || saved.version !== 1 || !Array.isArray(saved.messages)) return [];
-    return saved.messages
-      .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-      .map((m) => ({ role: m.role, content: m.content }));
-  }
-
-  private saveHistory(): void {
-    const now = Date.now();
-    let msgs: PersistedMessage[] = this.history
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content, ts: now }));
-    if (msgs.length > MAX_PERSISTED_MESSAGES) msgs = msgs.slice(-MAX_PERSISTED_MESSAGES);
-    // Enforce the byte cap by dropping the oldest pairs
-    while (msgs.length > 2 && JSON.stringify(msgs).length > MAX_PERSISTED_BYTES) {
-      msgs = msgs.slice(2);
+  // ── Session persistence ─────────────────────────────────
+  private loadStore(): void {
+    const v2 = parseStoreV2(this.context.workspaceState.get(SESSIONS_KEY));
+    if (v2) {
+      this.sessions = v2.sessions;
+      this.activeId = v2.sessions.some((s) => s.id === v2.activeId) ? v2.activeId : v2.sessions[0].id;
+      return;
     }
-    const data: PersistedChat = { version: 1, savedAt: now, messages: msgs };
-    void this.context.workspaceState.update(HISTORY_KEY, data);
+    // Migrate a v1 single conversation if present (write-validate-delete)
+    const migrated = migrateV1(this.context.workspaceState.get(V1_KEY));
+    if (migrated) {
+      this.sessions = [migrated];
+      this.activeId = migrated.id;
+      this.saveStore();
+      if (parseStoreV2(this.context.workspaceState.get(SESSIONS_KEY))) {
+        void this.context.workspaceState.update(V1_KEY, undefined);
+      }
+      return;
+    }
+    const fresh = newSession();
+    this.sessions = [fresh];
+    this.activeId = fresh.id;
   }
 
-  private clearStoredHistory(): void {
-    void this.context.workspaceState.update(HISTORY_KEY, undefined);
+  private saveStore(): void {
+    const store: StoreV2 = capStore({ version: 2, activeId: this.activeId, sessions: this.sessions });
+    this.sessions = store.sessions;
+    this.activeId = store.activeId;
+    void this.context.workspaceState.update(SESSIONS_KEY, store);
+  }
+
+  private get active(): Session {
+    let s = this.sessions.find((x) => x.id === this.activeId);
+    if (!s) {
+      s = this.sessions[0] ?? newSession();
+      if (this.sessions.length === 0) this.sessions.push(s);
+      this.activeId = s.id;
+    }
+    return s;
+  }
+
+  /** Append a transcript entry to the active session and persist. */
+  private addEntry(entry: Entry): void {
+    const s = this.active;
+    s.entries.push(entry);
+    s.updatedAt = entry.ts;
+    if (entry.kind === 'user' && isDefaultTitle(s.title)) {
+      s.title = autoTitle(entry.content);
+      this.postSessionList();
+    }
+    this.saveStore();
+  }
+
+  /** LLM-facing history for the active session (user/assistant only). */
+  private llmHistory(): OllamaMessage[] {
+    return entriesToMessages(this.active.entries);
+  }
+
+  private postSessionList(): void {
+    this.post({
+      type: 'sessionList',
+      sessions: this.sessions
+        .map((s) => ({ id: s.id, title: s.title, updatedAt: s.updatedAt }))
+        .sort((a, b) => b.updatedAt - a.updatedAt),
+      activeId: this.activeId,
+    });
+  }
+
+  /** Reset transient per-session run state (called on switch/new/delete). */
+  private resetRunState(): void {
+    this.activeAbort?.abort();
+    for (const resolve of this.pendingApprovals.values()) resolve('deny');
+    this.pendingApprovals.clear();
+    this.sessionAutoApprove = false;
+    this.lastCheckpoint = undefined;
+  }
+
+  private restoreActiveSession(): void {
+    this.postSessionList();
+    this.post({ type: 'restoreSession', entries: this.active.entries });
+  }
+
+  private createSession(): void {
+    this.resetRunState();
+    const s = newSession();
+    this.sessions.push(s);
+    this.activeId = s.id;
+    this.saveStore();
+    this.restoreActiveSession();
+  }
+
+  private switchSession(id: string): void {
+    if (id === this.activeId || !this.sessions.some((s) => s.id === id)) return;
+    this.resetRunState();
+    this.activeId = id;
+    this.saveStore();
+    this.restoreActiveSession();
+  }
+
+  private renameSession(id: string, title: string): void {
+    const s = this.sessions.find((x) => x.id === id);
+    if (!s) return;
+    s.title = title.trim() || s.title;
+    this.saveStore();
+    this.postSessionList();
+  }
+
+  private deleteSession(id: string): void {
+    const idx = this.sessions.findIndex((s) => s.id === id);
+    if (idx === -1) return;
+    const wasActive = id === this.activeId;
+    if (wasActive) this.resetRunState();
+    this.sessions.splice(idx, 1);
+    if (this.sessions.length === 0) this.sessions.push(newSession());
+    if (wasActive) {
+      // Activate the most recently updated remaining session
+      this.activeId = [...this.sessions].sort((a, b) => b.updatedAt - a.updatedAt)[0].id;
+    }
+    this.saveStore();
+    if (wasActive) this.restoreActiveSession();
+    else this.postSessionList();
   }
 
   /** Reveal the chat view in the sidebar. */
@@ -110,10 +209,16 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
       switch (msg.type) {
         case 'sendMessage':   await this.handleUserMessage(msg.text, msg.contexts); break;
         case 'clearHistory':
-          this.history = [];
-          this.clearStoredHistory();
+          this.active.entries = [];
+          this.active.title = newSession().title;
           this.sessionAutoApprove = false;
+          this.saveStore();
+          this.postSessionList();
           break;
+        case 'newSession':    this.createSession(); break;
+        case 'switchSession': this.switchSession(msg.id as string); break;
+        case 'renameSession': this.renameSession(msg.id as string, msg.title as string); break;
+        case 'deleteSession': this.deleteSession(msg.id as string); break;
         case 'toolApproval': {
           const callId = msg.callId as string;
           const resolver = this.pendingApprovals.get(callId);
@@ -169,15 +274,15 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
         case 'openSettings':
           await vscode.commands.executeCommand('workbench.action.openSettings', 'gemmaAgent');
           break;
-        case 'regenerate':
-          // Remove the last assistant + user pair; handleUserMessage re-adds the user turn
-          if (this.history.length >= 2 && this.history[this.history.length - 1].role === 'assistant') {
-            this.history.pop();
-            if (this.history[this.history.length - 1]?.role === 'user') this.history.pop();
-            this.saveHistory();
-          }
+        case 'regenerate': {
+          // Remove the last assistant + user entries; handleUserMessage re-adds the user turn
+          const entries = this.active.entries;
+          while (entries.length && entries[entries.length - 1].kind !== 'user') entries.pop();
+          if (entries.length && entries[entries.length - 1].kind === 'user') entries.pop();
+          this.saveStore();
           await this.handleUserMessage(msg.text as string);
           break;
+        }
       }
     });
 
@@ -198,9 +303,7 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
 
     // Initial paint
     void this.sendInitState();
-    if (this.history.length > 0) {
-      this.post({ type: 'history', messages: this.history });
-    }
+    this.restoreActiveSession();
     this.resolveViewReady?.();
   }
 
@@ -449,7 +552,7 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
       );
       content = `${text}\n\n${parts.join('\n\n')}`;
     }
-    this.history.push({ role: 'user', content });
+    this.addEntry({ kind: 'user', content, ts: Date.now() });
     this.post({ type: 'userMessage', text: content });
     this.post({ type: 'startAssistant' });
     this.activeAbort = new AbortController();
@@ -461,10 +564,10 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
   private async runChat(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('gemmaAgent');
     const budget = computeBudget(cfg.get<number>('numCtx', 8192), cfg.get<number>('maxTokens', 4096));
-    // Trim a copy — this.history keeps the full transcript for the UI and storage
+    // Trim a copy — the session entries keep the full transcript for the UI/storage
     const systemPrompt = CHAT_SYSTEM_PROMPT + getInstructionSuffix();
     const { messages, droppedCount } = fitMessages(
-      [{ role: 'system', content: systemPrompt }, ...this.history],
+      [{ role: 'system', content: systemPrompt }, ...this.llmHistory()],
       budget
     );
     if (droppedCount > 0) this.post({ type: 'contextTrimmed', count: droppedCount });
@@ -483,22 +586,21 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
         this.postError(
           `The model returned an empty response.\n` +
           `• Current model: ${cfg.get('model')}\n` +
-          `• Is this model installed in Ollama? Check with: ollama list`
+          `• Is this model installed? Check the model picker.`
         );
       } else {
-        this.history.push({ role: 'assistant', content: response });
+        this.addEntry({ kind: 'assistant', content: response, ts: Date.now() });
       }
       this.post({ type: 'endAssistant' });
     } catch (err: unknown) {
       if ((err as Error).name === 'AbortError') {
         // Keep whatever streamed before the user pressed Stop
-        if (response.trim()) this.history.push({ role: 'assistant', content: response });
+        if (response.trim()) this.addEntry({ kind: 'assistant', content: response, ts: Date.now() });
       } else {
         this.postError(describeOllamaError(err));
       }
       this.post({ type: 'endAssistant' });
     }
-    this.saveHistory();
   }
 
   private confirmTool(_call: ToolCall, callId: string): Promise<'approve' | 'deny'> {
@@ -527,7 +629,8 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
   }
 
   private async runAgent(content: string): Promise<void> {
-    const historyWithoutLast = this.history.slice(0, -1);
+    // History before the just-added user turn (the loop takes the user msg separately)
+    const historyWithoutLast = this.llmHistory().slice(0, -1);
     const cfg = vscode.workspace.getConfiguration('gemmaAgent');
     const maxIterations = cfg.get<number>('agentMaxIterations', 10);
 
@@ -544,6 +647,10 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
         switch (event.type) {
           case 'text':          fullResponse += event.text; this.post({ type: 'chunk', text: event.text! }); break;
           case 'tool_call':
+            this.pendingToolEntry = {
+              tool: event.tool!.tool,
+              arg: String(event.tool!.path ?? event.tool!.command ?? event.tool!.query ?? ''),
+            };
             this.post({
               type: 'toolCall',
               tool: event.tool!,
@@ -551,23 +658,35 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
               requiresApproval: !!event.requiresApproval && !this.sessionAutoApprove,
             });
             break;
-          case 'tool_result':   this.post({ type: 'toolResult', result: event.result!, callId: event.callId }); break;
+          case 'tool_result':
+            this.post({ type: 'toolResult', result: event.result!, callId: event.callId });
+            if (this.pendingToolEntry) {
+              this.addEntry({
+                kind: 'tool',
+                tool: this.pendingToolEntry.tool,
+                arg: this.pendingToolEntry.arg,
+                ok: !!event.result?.ok,
+                output: event.result?.output ?? '',
+                ts: Date.now(),
+              });
+              this.pendingToolEntry = undefined;
+            }
+            break;
           case 'agentThinking': this.post({ type: 'agentThinking', iteration: event.iteration, maxIterations: event.maxIterations }); break;
-          case 'warning':       this.post({ type: 'notice', text: event.text }); break;
+          case 'warning':       this.post({ type: 'notice', text: event.text }); this.addEntry({ kind: 'notice', text: event.text ?? '', ts: Date.now() }); break;
           case 'error':         this.postError(event.text!); break;
         }
       }
-      this.history.push({ role: 'assistant', content: fullResponse });
+      if (fullResponse.trim()) this.addEntry({ kind: 'assistant', content: fullResponse, ts: Date.now() });
       this.post({ type: 'endAssistant' });
     } catch (err: unknown) {
       if ((err as Error).name === 'AbortError') {
-        if (fullResponse.trim()) this.history.push({ role: 'assistant', content: fullResponse });
+        if (fullResponse.trim()) this.addEntry({ kind: 'assistant', content: fullResponse, ts: Date.now() });
       } else {
         this.postError(describeOllamaError(err));
       }
       this.post({ type: 'endAssistant' });
     }
-    this.saveHistory();
 
     if (checkpoint.files.length > 0) {
       this.post({ type: 'checkpointAvailable', checkpointId: checkpoint.id, files: checkpoint.files });
@@ -617,13 +736,16 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
     <span id="headerTitle">Gemma Agent</span>
     <button id="modelBadge" title="Choose model">…</button>
     <div id="headerActions">
+      <button class="icon-btn" id="sessionsBtn" title="Chat sessions">☰</button>
+      <button class="icon-btn" id="newChatBtn" title="New chat">＋</button>
       <button class="icon-btn" id="refreshBtn" title="Refresh installed models">⟳</button>
       <button class="icon-btn" id="stopOllamaBtn" title="Stop Ollama">⏹</button>
-      <button class="icon-btn" id="clearBtn" title="Clear chat history">🗑</button>
+      <button class="icon-btn" id="clearBtn" title="Clear this conversation">🗑</button>
     </div>
   </div>
 
   <div id="modelPopover"></div>
+  <div id="sessionPopover"></div>
 
   <div id="pillBar">
     <button class="pill" data-feature="completion" title="Ghost text inline completions">Completion</button>
