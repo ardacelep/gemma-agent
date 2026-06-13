@@ -238,6 +238,58 @@ body {
 }
 .pull-btn:hover { background: var(--vscode-button-hoverBackground); }
 
+/* ── Command popup (slash commands / file references) ─── */
+#cmdPopover {
+  position: fixed;
+  z-index: 999;
+  background: var(--vscode-menu-background, var(--vscode-dropdown-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-dropdown-border));
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  padding: 4px;
+  display: none;
+  max-height: 220px;
+  overflow-y: auto;
+}
+#cmdPopover.open { display: block; }
+
+.cmd-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  transition: background var(--transition);
+}
+.cmd-option:hover,
+.cmd-option.selected { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); }
+.cmd-name {
+  font-weight: 600;
+  font-family: var(--vscode-editor-font-family);
+  flex-shrink: 0;
+}
+.cmd-desc {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Inline notice (context trimmed etc.) ─────────────── */
+.chat-notice {
+  align-self: center;
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  background: color-mix(in srgb, var(--vscode-panel-border) 30%, transparent);
+  border-radius: 20px;
+  padding: 2px 10px;
+  flex-shrink: 0;
+}
+
 /* ── Messages wrapper (contains messages + scroll button) */
 #messagesWrapper {
   flex: 1;
@@ -526,6 +578,60 @@ body.vscode-high-contrast .hl-pp { color: #c586c0; }
 }
 .tool-card.success { border-color: #4caf50; }
 .tool-card.failure { border-color: #f44336; }
+.tool-card.awaiting { border-color: var(--vscode-inputValidation-warningBorder, #cc9900); }
+.awaiting .tool-status-badge { color: var(--vscode-inputValidation-warningForeground, #cc9900); }
+
+.tool-approval {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 6px;
+  padding-top: 6px;
+}
+.approval-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background var(--transition), opacity var(--transition);
+}
+.approval-btn.approve {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+.approval-btn.approve:hover { background: var(--vscode-button-hoverBackground); }
+.approval-btn.deny {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+.approval-btn.deny:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.approval-btn.always {
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  border-color: var(--vscode-panel-border);
+}
+.approval-btn.always:hover { color: var(--vscode-foreground); }
+
+/* ── Checkpoint (undo agent edits) bar ────────────────── */
+.checkpoint-bar {
+  display: flex;
+  justify-content: flex-start;
+  flex-shrink: 0;
+}
+.undo-btn {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--vscode-panel-border);
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  transition: background var(--transition), opacity var(--transition);
+}
+.undo-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
+.undo-btn:disabled { opacity: 0.5; cursor: default; }
 
 .tool-card-left {
   display: flex;

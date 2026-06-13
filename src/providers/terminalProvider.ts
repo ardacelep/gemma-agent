@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { ollamaGenerate } from '../ollama/client';
 import { GemmaChatProvider } from './chatProvider';
 
 export function registerTerminalCommands(
@@ -13,12 +12,12 @@ export function registerTerminalCommands(
 
       const choice = await vscode.window.showQuickPick(
         [
-          { label: '▶  Seçili kodu terminalde çalıştır', id: 'run' },
-          { label: '📖  Terminaldeki son çıktıyı açıkla', id: 'explainOutput' },
-          { label: '🔧  Terminaldeki hatayı düzelt', id: 'fixError' },
-          { label: '💬  Seçili kodu terminalde çalıştıracak komut üret', id: 'generateCommand' },
+          { label: '▶  Run selected code in terminal', id: 'run' },
+          { label: '📖  Explain last terminal output', id: 'explainOutput' },
+          { label: '🔧  Fix a terminal error', id: 'fixError' },
+          { label: '💬  Generate a command to run the selected code', id: 'generateCommand' },
         ],
-        { placeHolder: 'Terminal eylemi seçin' }
+        { placeHolder: 'Choose a terminal action' }
       );
 
       if (!choice) return;
@@ -35,7 +34,7 @@ export function registerTerminalCommands(
           break;
         case 'generateCommand':
           if (!hasSelection) {
-            vscode.window.showWarningMessage('Lütfen önce kodu seçin.');
+            vscode.window.showWarningMessage('Select some code first.');
             return;
           }
           await generateTerminalCommand(chatProvider, editor!);
@@ -47,7 +46,7 @@ export function registerTerminalCommands(
 
 async function runSelectionInTerminal(editor?: vscode.TextEditor): Promise<void> {
   if (!editor || editor.selection.isEmpty) {
-    vscode.window.showWarningMessage('Çalıştırılacak kod seçili değil.');
+    vscode.window.showWarningMessage('No code selected to run.');
     return;
   }
   const code = editor.document.getText(editor.selection);
@@ -57,16 +56,16 @@ async function runSelectionInTerminal(editor?: vscode.TextEditor): Promise<void>
 }
 
 async function explainTerminalOutput(chatProvider: GemmaChatProvider): Promise<void> {
-  const output = await promptForTerminalContent('Terminal çıktısını buraya yapıştırın:');
+  const output = await promptForTerminalContent('Paste the terminal output here:');
   if (!output) return;
-  await chatProvider.sendToChat('Bu terminal çıktısını Türkçe açıkla:', output);
+  await chatProvider.sendToChat('Explain this terminal output:', output);
 }
 
 async function fixTerminalError(
   chatProvider: GemmaChatProvider,
   editor?: vscode.TextEditor
 ): Promise<void> {
-  const error = await promptForTerminalContent('Hata mesajını buraya yapıştırın:');
+  const error = await promptForTerminalContent('Paste the error message here:');
   if (!error) return;
 
   let codeContext = '';
@@ -75,8 +74,8 @@ async function fixTerminalError(
   }
 
   const prompt = codeContext
-    ? `Aşağıdaki hata mesajı ve ilgili kodu inceleyerek hatayı düzelt:\n\nHata:\n${error}`
-    : `Aşağıdaki terminal hatasını analiz et ve çözüm öner:\n\n${error}`;
+    ? `Look at the error message and the related code below, then fix the error:\n\nError:\n${error}`
+    : `Analyze this terminal error and suggest a fix:\n\n${error}`;
 
   await chatProvider.sendToChat(prompt, codeContext || '');
 }
@@ -88,7 +87,7 @@ async function generateTerminalCommand(
   const code = editor.document.getText(editor.selection);
   const lang = editor.document.languageId;
   await chatProvider.sendToChat(
-    `Bu ${lang} kodunu çalıştırmak için gerekli terminal komutlarını üret (derleme, bağımlılık kurulumu, çalıştırma adımları dahil):`,
+    `Generate the terminal commands needed to run this ${lang} code (including build steps and dependency installation):`,
     code
   );
 }

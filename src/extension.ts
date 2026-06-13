@@ -7,21 +7,20 @@ import { GemmaCompletionProvider } from './providers/completionProvider';
 import { GemmaChatProvider } from './providers/chatProvider';
 import { GemmaCodeActionProvider, registerCodeActionCommands } from './providers/codeActionProvider';
 import { registerTerminalCommands } from './providers/terminalProvider';
+import { registerScmCommands } from './providers/scmProvider';
 import { isOllamaRunning, listModels } from './ollama/client';
-import { inlineEdit } from './providers/inlineEditProvider';
+import { inlineEdit, registerInlineEdit } from './providers/inlineEditProvider';
+import { StatusBarManager } from './statusBar';
 
-let statusBarItem: vscode.StatusBarItem;
 let ollamaStartedByUs = false;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBarItem.command = 'gemmaAgent.openChat';
-  context.subscriptions.push(statusBarItem);
+  const statusBar = new StatusBarManager();
+  statusBar.register(context);
 
   await autoSelectModel();
-  await updateStatusBar();
 
-  const chatProvider = new GemmaChatProvider(context.extensionUri);
+  const chatProvider = new GemmaChatProvider(context);
 
   const editorCfg = vscode.workspace.getConfiguration('editor');
   if (!editorCfg.get<boolean>('inlineSuggest.enabled')) {
@@ -42,6 +41,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   registerCodeActionCommands(context, chatProvider);
   registerTerminalCommands(context, chatProvider);
+  registerInlineEdit(context);
+  registerScmCommands(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('gemmaAgent.openChat', () => {
@@ -55,18 +56,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Ollama', cancellable: false },
           async (progress) => {
-            progress.report({ message: 'Başlatılıyor…' });
+            progress.report({ message: 'Starting…' });
             await new Promise<void>((resolve, reject) => {
               cp.exec('open -g -a Ollama', (err) => err ? reject(err) : resolve());
             });
-            progress.report({ message: 'Bağlantı bekleniyor…' });
+            progress.report({ message: 'Waiting for connection…' });
             const ready = await pollUntilReady();
             if (ready) ollamaStartedByUs = true;
-            progress.report({ message: ready ? 'Hazır ✓' : 'Başlatılamadı' });
+            progress.report({ message: ready ? 'Ready ✓' : 'Could not start' });
             await new Promise((r) => setTimeout(r, 800));
           }
         );
-        await updateStatusBar();
+        await statusBar.refresh();
         return;
       }
 
@@ -83,30 +84,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         await vscode.window.withProgress(
           { location: vscode.ProgressLocation.Notification, title: 'Ollama', cancellable: false },
           async (progress) => {
-            progress.report({ message: 'Sunucu başlatılıyor…' });
+            progress.report({ message: 'Starting server…' });
             const ready = await pollUntilReady();
             if (ready) ollamaStartedByUs = true;
-            progress.report({ message: ready ? 'Hazır ✓' : 'Başlatılamadı' });
+            progress.report({ message: ready ? 'Ready ✓' : 'Could not start' });
             await new Promise((r) => setTimeout(r, 800));
           }
         );
-        await updateStatusBar();
+        await statusBar.refresh();
         return;
       }
 
       const action = await vscode.window.showErrorMessage(
-        'Ollama bulunamadı. Yüklemek ister misiniz?',
-        'Mac Uygulamasını İndir'
+        'Ollama was not found. Would you like to install it?',
+        'Download for Mac'
       );
-      if (action === 'Mac Uygulamasını İndir') {
+      if (action === 'Download for Mac') {
         vscode.env.openExternal(vscode.Uri.parse('https://ollama.com/download/mac'));
       }
     }),
 
     vscode.commands.registerCommand('gemmaAgent.pullModel', async (modelName?: string) => {
       const model = modelName ?? await vscode.window.showInputBox({
-        prompt: 'İndirilecek model adını girin',
-        placeHolder: 'örn. gemma4:9b',
+        prompt: 'Model to download',
+        placeHolder: 'e.g. gemma3:4b',
       });
       if (!model) return;
       const terminal = vscode.window.terminals.find((t) => t.name === 'Ollama') ??
@@ -123,29 +124,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('gemmaAgent.stopOllama', async () => {
       await stopOllama();
       ollamaStartedByUs = false;
-      await updateStatusBar();
+      await statusBar.refresh();
     }),
 
     vscode.commands.registerCommand('gemmaAgent.toggleCompletion', () => {
       const cfg = vscode.workspace.getConfiguration('gemmaAgent');
       const current = cfg.get<boolean>('completionEnabled', true);
       cfg.update('completionEnabled', !current, vscode.ConfigurationTarget.Global);
-      vscode.window.showInformationMessage(`Gemma inline completion: ${!current ? 'açık' : 'kapalı'}`);
-      updateStatusBar();
+      vscode.window.showInformationMessage(`Gemma inline completion: ${!current ? 'on' : 'off'}`);
+      void statusBar.refresh();
     })
   );
-
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('gemmaAgent')) updateStatusBar();
-    })
-  );
-
-  const statusInterval = setInterval(updateStatusBar, 30_000);
-  context.subscriptions.push({ dispose: () => clearInterval(statusInterval) });
 }
 
-// ── Yardımcı fonksiyonlar ─────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────
 function findMacApp(): string | undefined {
   const candidates = [
     '/Applications/Ollama.app',
@@ -189,30 +181,10 @@ async function autoSelectModel(): Promise<void> {
   if (configured && available.includes(configured)) return;
   const gemmaModel = available.find((m) => m.toLowerCase().includes('gemma')) ?? available[0];
   await cfg.update('model', gemmaModel, vscode.ConfigurationTarget.Global);
-  vscode.window.showInformationMessage(`Gemma Agent: model otomatik seçildi → ${gemmaModel}`);
-}
-
-async function updateStatusBar(): Promise<void> {
-  const running = await isOllamaRunning();
-  const cfg = vscode.workspace.getConfiguration('gemmaAgent');
-  const model = cfg.get<string>('model', 'gemma4:e4b');
-  const completionOn = cfg.get<boolean>('completionEnabled', true);
-
-  if (running) {
-    statusBarItem.text = `$(sparkle) Gemma ${model}${completionOn ? '' : ' [kapalı]'}`;
-    statusBarItem.tooltip = `Ollama çalışıyor — ${model}\nTıklayarak chat'i aç`;
-    statusBarItem.backgroundColor = undefined;
-  } else {
-    statusBarItem.text = '$(warning) Gemma: Bağlantı yok';
-    statusBarItem.tooltip = 'Ollama çalışmıyor — ollama serve komutunu çalıştırın';
-    statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-  }
-  statusBarItem.show();
+  vscode.window.showInformationMessage(`Gemma Agent: model auto-selected → ${gemmaModel}`);
 }
 
 export async function deactivate(): Promise<void> {
-  statusBarItem?.dispose();
-
   if (!ollamaStartedByUs) return;
 
   const preference = vscode.workspace.getConfiguration('gemmaAgent')
@@ -225,11 +197,11 @@ export async function deactivate(): Promise<void> {
 
   if (preference === 'ask') {
     const choice = await vscode.window.showInformationMessage(
-      'Ollama arka planda çalışmaya devam etsin mi?',
+      'Keep Ollama running in the background?',
       { modal: true },
-      'Çalışmaya Devam Et',
-      'Durdur'
+      'Keep Running',
+      'Stop'
     );
-    if (choice === 'Durdur') await stopOllama();
+    if (choice === 'Stop') await stopOllama();
   }
 }

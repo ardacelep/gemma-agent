@@ -21,6 +21,7 @@
   const attachMenu   = /** @type {HTMLDivElement} */ (document.getElementById('attachMenu'));
   const contextChips = /** @type {HTMLDivElement} */ (document.getElementById('contextChips'));
   const scrollToBottomBtn = /** @type {HTMLButtonElement} */ (document.getElementById('scrollToBottomBtn'));
+  const inputWrapper = /** @type {HTMLDivElement} */ (document.getElementById('inputWrapper'));
 
   /** @type {Array<{name: string, content: string, lang: string}>} */
   let attachedContexts = [];
@@ -35,9 +36,92 @@
   let thinkingIndicator = /** @type {HTMLDivElement|null} */ (null);
   let installedModels = /** @type {string[]} */ ([]);
   let availableModels = /** @type {string[]} */ ([]);
-  let currentModel = 'gemma4:e4b';
+  let currentModel = '';
   let popoverOpen = false;
   let userScrolledUp = false;
+
+  /** @type {Array<{name: string, description: string}>} */
+  let slashCommands = [];
+
+  // ── Command popup (slash commands + #file references) ─
+  const cmdPopover = document.createElement('div');
+  cmdPopover.id = 'cmdPopover';
+  document.body.appendChild(cmdPopover);
+  let cmdPopoverOpen = false;
+  /** @type {Array<{name: string, description: string}>} */
+  let cmdItems = [];
+  let cmdSelected = 0;
+  /** @type {'slash' | 'file'} */
+  let cmdMode = 'slash';
+  let fileQueryDebounce;
+  const FILE_REF_RE = /(^|\s)#([\w./\\-]*)$/;
+
+  function openCmdPopover(items) {
+    cmdItems = items;
+    cmdSelected = 0;
+    renderCmdPopover();
+    cmdPopover.classList.add('open');
+    cmdPopoverOpen = true;
+  }
+
+  function closeCmdPopover() {
+    cmdPopoverOpen = false;
+    cmdPopover.classList.remove('open');
+  }
+
+  function renderCmdPopover() {
+    cmdPopover.innerHTML = '';
+    cmdItems.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'cmd-option' + (idx === cmdSelected ? ' selected' : '');
+      row.innerHTML = cmdMode === 'file'
+        ? `<span class="cmd-name">📄 ${escapeHtml(item.name)}</span>`
+        : `<span class="cmd-name">/${escapeHtml(item.name)}</span>` +
+          `<span class="cmd-desc">${escapeHtml(item.description)}</span>`;
+      row.addEventListener('click', (e) => { e.stopPropagation(); applyCmdSelection(idx); });
+      cmdPopover.appendChild(row);
+    });
+    positionCmdPopover();
+  }
+
+  function positionCmdPopover() {
+    const rect = inputWrapper.getBoundingClientRect();
+    cmdPopover.style.left = rect.left + 'px';
+    cmdPopover.style.width = rect.width + 'px';
+    cmdPopover.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+  }
+
+  function applyCmdSelection(idx) {
+    const item = cmdItems[idx];
+    if (!item) return;
+    if (cmdMode === 'file') {
+      // Remove the typed #partial and attach the file as a context chip
+      inputEl.value = inputEl.value.replace(FILE_REF_RE, '$1');
+      vscode.postMessage({ type: 'attachFile', path: item.name });
+    } else {
+      inputEl.value = '/' + item.name + ' ';
+    }
+    closeCmdPopover();
+    inputEl.focus();
+  }
+
+  function updateCmdPopover() {
+    const slashM = /^\/(\w*)$/.exec(inputEl.value);
+    if (slashM && slashCommands.length) {
+      const filtered = slashCommands.filter((c) => c.name.startsWith(slashM[1].toLowerCase()));
+      if (filtered.length) { cmdMode = 'slash'; openCmdPopover(filtered); return; }
+    }
+    const fileM = FILE_REF_RE.exec(inputEl.value);
+    if (fileM) {
+      cmdMode = 'file';
+      clearTimeout(fileQueryDebounce);
+      fileQueryDebounce = setTimeout(() => {
+        vscode.postMessage({ type: 'requestFileList', query: fileM[2] });
+      }, 150);
+      return; // popup opens (or refreshes) when the fileList answer arrives
+    }
+    closeCmdPopover();
+  }
 
   // ── Scroll tracking for sticky button ────────────────
   messagesEl.addEventListener('scroll', () => {
@@ -61,11 +145,16 @@
   inputEl.addEventListener('input', () => {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+    updateCmdPopover();
   });
 
   // ── Escape key: close popovers / stop generation ──────
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (cmdPopoverOpen) {
+      closeCmdPopover();
+      return;
+    }
     if (popoverOpen) {
       modelPopover.classList.remove('open');
       popoverOpen = false;
@@ -99,6 +188,7 @@
 
   document.addEventListener('click', () => {
     if (attachMenuOpen) { attachMenuOpen = false; attachMenu.classList.remove('open'); }
+    if (cmdPopoverOpen) closeCmdPopover();
   });
 
   function renderChips() {
@@ -127,8 +217,19 @@
   function sendMessage() {
     const text = inputEl.value.trim();
     if (!text || isGenerating) return;
+    closeCmdPopover();
     inputEl.value = '';
     inputEl.style.height = 'auto';
+
+    // /clear runs locally — same path as the clear button
+    if (text === '/clear') {
+      messagesEl.innerHTML = '';
+      messagesEl.appendChild(emptyState);
+      emptyState.style.display = 'flex';
+      vscode.postMessage({ type: 'clearHistory' });
+      return;
+    }
+
     hideEmpty();
     const contexts = attachedContexts.length ? [...attachedContexts] : undefined;
     attachedContexts = [];
@@ -138,6 +239,11 @@
 
   sendBtn.addEventListener('click', sendMessage);
   inputEl.addEventListener('keydown', (e) => {
+    if (cmdPopoverOpen) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); cmdSelected = (cmdSelected + 1) % cmdItems.length; renderCmdPopover(); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); cmdSelected = (cmdSelected - 1 + cmdItems.length) % cmdItems.length; renderCmdPopover(); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); applyCmdSelection(cmdSelected); return; }
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
   stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'stopGeneration' }));
@@ -262,11 +368,12 @@
       case 'init':
         installedModels = msg.installedModels ?? [];
         availableModels = msg.availableModels ?? [];
-        currentModel = msg.currentModel ?? 'gemma4:e4b';
-        modelBadge.textContent = currentModel;
+        currentModel = msg.currentModel ?? '';
+        modelBadge.textContent = currentModel || '…';
         applyFeatures(msg.features);
         setOllamaStatus(msg.ollamaRunning);
         setAgentMode(msg.agentMode);
+        slashCommands = msg.slashCommands ?? [];
         refreshBtn.textContent = '⟳';
         refreshBtn.disabled = false;
         break;
@@ -289,6 +396,12 @@
         modelBadge.disabled = false;
         modelBadge.classList.remove('loading');
         break;
+      case 'modelWarmupFailed':
+        modelBadge.textContent = truncateModel(msg.model);
+        modelBadge.disabled = false;
+        modelBadge.classList.remove('loading');
+        appendError(`Could not load model "${msg.model}": ${msg.message}`);
+        break;
       case 'agentMode':
         setAgentMode(msg.enabled);
         break;
@@ -304,10 +417,23 @@
       case 'toolCall':
         flushPendingChunks();
         removeThinkingIndicator();
-        appendToolCard(msg.tool);
+        appendToolCard(msg.tool, msg.callId, msg.requiresApproval);
         break;
       case 'toolResult':
-        finalizeToolCard(msg.result);
+        finalizeToolCard(msg.result, msg.callId);
+        break;
+      case 'toolApprovalResolved':
+        resolveToolApproval(msg.callId, msg.approved);
+        break;
+      case 'notice':
+        flushPendingChunks();
+        appendNotice(msg.text);
+        break;
+      case 'checkpointAvailable':
+        showCheckpointBar(msg.checkpointId, msg.files);
+        break;
+      case 'checkpointRestored':
+        markCheckpointRestored(msg.failed);
         break;
       case 'agentThinking':
         flushPendingChunks();
@@ -330,6 +456,18 @@
         attachedContexts.push({ name: msg.name, content: msg.content, lang: msg.lang });
         renderChips();
         break;
+      case 'contextTrimmed':
+        appendNotice(`Conversation is long — ${msg.count} older message${msg.count > 1 ? 's' : ''} trimmed from the model context.`);
+        break;
+      case 'fileList': {
+        // Show only if the input still has an active #query
+        if (!FILE_REF_RE.test(inputEl.value)) break;
+        const files = msg.files ?? [];
+        if (!files.length) { closeCmdPopover(); break; }
+        cmdMode = 'file';
+        openCmdPopover(files.map((f) => ({ name: f, description: '' })));
+        break;
+      }
       case 'contextError':
         vscode.postMessage({ type: 'showError' }); // fallback
         appendError(msg.message);
@@ -469,6 +607,13 @@
     isGenerating = false;
     setInputDisabled(false);
     if (scrollToBottomBtn) scrollToBottomBtn.classList.remove('visible');
+    // Run ended while a tool was awaiting approval (e.g. Stop pressed)
+    document.querySelectorAll('.tool-card.awaiting').forEach((card) => {
+      card.querySelector('.tool-approval')?.remove();
+      card.classList.remove('awaiting');
+      const badge = card.querySelector('.tool-status-badge');
+      if (badge) badge.textContent = 'canceled';
+    });
     if (assistantBubble) {
       if (!rawBuffer.trim()) {
         // Agent only did tool calls — remove empty bubble
@@ -481,6 +626,18 @@
     assistantBubble = null;
     rawBuffer = '';
     inputEl.focus();
+  }
+
+  function appendNotice(text) {
+    hideEmpty();
+    const div = document.createElement('div');
+    div.className = 'chat-notice';
+    div.textContent = text;
+    // While streaming, place the notice above the live assistant bubble
+    const wrap = assistantBubble?.closest('.message');
+    if (wrap) messagesEl.insertBefore(div, wrap);
+    else messagesEl.appendChild(div);
+    scrollToBottomIfSticky();
   }
 
   function appendError(text) {
@@ -519,8 +676,10 @@
       const lastUser = allMessages[allMessages.length - 1];
       const lastText = lastUser?.querySelector('.bubble')?.textContent ?? '';
       if (!lastText) return;
-      // Remove last assistant message
+      // Remove the assistant message and the user bubble —
+      // the extension re-posts the user turn, avoiding duplicates
       msgWrap.remove();
+      lastUser.remove();
       vscode.postMessage({ type: 'regenerate', text: lastText });
     });
     msgWrap.appendChild(btn);
@@ -528,38 +687,78 @@
 
   // ── Tool cards ────────────────────────────────────────
   const TOOL_META = {
-    create_file:  { emoji: '📄', label: 'Create file' },
-    edit_file:    { emoji: '✏️', label: 'Edit file' },
-    read_file:    { emoji: '📖', label: 'Read file' },
-    run_command:  { emoji: '⚡', label: 'Run command' },
-    list_files:   { emoji: '📁', label: 'List directory' },
-    search_files: { emoji: '🔍', label: 'Search files' },
+    create_file:     { emoji: '📄', label: 'Create file' },
+    edit_file:       { emoji: '✏️', label: 'Edit file' },
+    read_file:       { emoji: '📖', label: 'Read file' },
+    run_command:     { emoji: '⚡', label: 'Run command' },
+    list_files:      { emoji: '📁', label: 'List directory' },
+    search_files:    { emoji: '🔍', label: 'Search files' },
+    get_diagnostics: { emoji: '🩺', label: 'Get diagnostics' },
   };
 
-  function appendToolCard(tool) {
+  /** @type {Map<string, HTMLDivElement>} */
+  const toolCards = new Map();
+
+  function appendToolCard(tool, callId, requiresApproval) {
     const meta = TOOL_META[tool.tool] ?? { emoji: '⚙', label: tool.tool };
     const arg = tool.path ?? tool.command ?? tool.query ?? '';
 
     const card = document.createElement('div');
-    card.className = 'tool-card running';
+    card.className = 'tool-card ' + (requiresApproval ? 'awaiting' : 'running');
+    if (callId) {
+      card.dataset.callId = callId;
+      toolCards.set(callId, card);
+    }
     card.innerHTML = `
       <div class="tool-card-left">
         <span class="tool-emoji">${meta.emoji}</span>
         <span class="tool-name">${meta.label}</span>
       </div>
       <span class="tool-arg" title="${escapeHtml(arg)}">${escapeHtml(arg)}</span>
-      <span class="tool-status-badge">running…</span>`;
+      <span class="tool-status-badge">${requiresApproval ? 'needs approval' : 'running…'}</span>`;
+
+    if (requiresApproval) {
+      const actions = document.createElement('div');
+      actions.className = 'tool-approval';
+      actions.innerHTML =
+        `<button class="approval-btn approve" data-decision="approve">✓ Approve</button>` +
+        `<button class="approval-btn deny" data-decision="deny">✗ Deny</button>` +
+        `<button class="approval-btn always" data-decision="always">Always allow</button>`;
+      actions.querySelectorAll('button').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          vscode.postMessage({ type: 'toolApproval', callId, decision: /** @type {HTMLButtonElement} */ (btn).dataset.decision });
+        });
+      });
+      card.appendChild(actions);
+    }
 
     messagesEl.appendChild(card);
     lastToolCard = card;
     scrollToBottomIfSticky();
   }
 
-  function finalizeToolCard(result) {
-    if (!lastToolCard) return;
-    lastToolCard.classList.remove('running');
-    lastToolCard.classList.add(result.ok ? 'success' : 'failure');
-    const badge = lastToolCard.querySelector('.tool-status-badge');
+  function resolveToolApproval(callId, approved) {
+    const card = toolCards.get(callId) || lastToolCard;
+    if (!card) return;
+    card.querySelector('.tool-approval')?.remove();
+    card.classList.remove('awaiting');
+    const badge = card.querySelector('.tool-status-badge');
+    if (approved) {
+      card.classList.add('running');
+      if (badge) badge.textContent = 'running…';
+    } else if (badge) {
+      badge.textContent = 'denied'; // the DENIED tool_result finalizes the card
+    }
+  }
+
+  function finalizeToolCard(result, callId) {
+    const card = (callId && toolCards.get(callId)) || lastToolCard;
+    if (!card) return;
+    if (callId) toolCards.delete(callId);
+    card.querySelector('.tool-approval')?.remove();
+    card.classList.remove('running', 'awaiting');
+    card.classList.add(result.ok ? 'success' : 'failure');
+    const badge = card.querySelector('.tool-status-badge');
     if (badge) badge.textContent = result.ok ? '✓ Done' : '✗ Error';
 
     if (result.output && result.output.length > 15) {
@@ -570,10 +769,47 @@
       pre.textContent = result.output;
       details.innerHTML = '<summary>Show output</summary>';
       details.appendChild(pre);
-      lastToolCard.appendChild(details);
+      card.appendChild(details);
     }
-    lastToolCard = null;
+    if (card === lastToolCard) lastToolCard = null;
     scrollToBottomIfSticky();
+  }
+
+  // ── Checkpoint (undo agent edits) bar ─────────────────
+  /** @type {HTMLDivElement|null} */
+  let checkpointBar = null;
+
+  function showCheckpointBar(checkpointId, files) {
+    // Only the latest checkpoint is restorable — retire the previous bar
+    if (checkpointBar) {
+      const old = checkpointBar.querySelector('button');
+      if (old && !old.disabled) { old.disabled = true; old.textContent = 'Superseded'; }
+    }
+    const bar = document.createElement('div');
+    bar.className = 'checkpoint-bar';
+    const btn = document.createElement('button');
+    btn.className = 'undo-btn';
+    btn.textContent = `↩ Undo edits (${files.length} file${files.length > 1 ? 's' : ''})`;
+    btn.title = files.join('\n');
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      btn.textContent = 'Restoring…';
+      vscode.postMessage({ type: 'undoCheckpoint', checkpointId });
+    });
+    bar.appendChild(btn);
+    messagesEl.appendChild(bar);
+    checkpointBar = bar;
+    scrollToBottomIfSticky();
+  }
+
+  function markCheckpointRestored(failed) {
+    if (!checkpointBar) return;
+    const btn = checkpointBar.querySelector('button');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = failed && failed.length ? '⚠ Partially restored' : '✓ Restored';
+    }
+    checkpointBar = null;
   }
 
   // ── Syntax highlighter ────────────────────────────────

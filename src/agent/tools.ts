@@ -3,7 +3,8 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import * as os from 'os';
 
-export type ToolName = 'create_file' | 'edit_file' | 'read_file' | 'run_command' | 'list_files' | 'search_files';
+export const TOOL_NAMES = ['create_file', 'edit_file', 'read_file', 'run_command', 'list_files', 'search_files', 'get_diagnostics'] as const;
+export type ToolName = typeof TOOL_NAMES[number];
 
 export interface ToolCall {
   tool: ToolName;
@@ -26,7 +27,7 @@ function workspaceRoot(): string {
   return root;
 }
 
-function resolveUri(filePath: string): vscode.Uri {
+export function resolveUri(filePath: string): vscode.Uri {
   const root = workspaceRoot();
   const resolved = path.isAbsolute(filePath)
     ? path.resolve(filePath)
@@ -41,7 +42,7 @@ function resolveUri(filePath: string): vscode.Uri {
   return vscode.Uri.file(resolved);
 }
 
-export async function executeTool(call: ToolCall): Promise<ToolResult> {
+export async function executeTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
   try {
     switch (call.tool) {
       case 'create_file':
@@ -51,11 +52,13 @@ export async function executeTool(call: ToolCall): Promise<ToolResult> {
       case 'read_file':
         return await readFile(call.path as string);
       case 'run_command':
-        return await runCommand(call.command as string);
+        return await runCommand(call.command as string, signal);
       case 'list_files':
         return await listFiles((call.path as string) ?? '.');
       case 'search_files':
-        return await searchFiles(call.query as string, call.path as string);
+        return await searchFiles(call.query as string, call.path as string, call.regex === true);
+      case 'get_diagnostics':
+        return getDiagnostics(call.path as string | undefined);
       default:
         return { ok: false, output: `Unknown tool: ${call.tool}` };
     }
@@ -125,7 +128,9 @@ async function readFile(filePath: string): Promise<ToolResult> {
   return { ok: true, output: preview };
 }
 
-async function runCommand(command: string): Promise<ToolResult> {
+const COMMAND_TIMEOUT_MS = 30_000;
+
+async function runCommand(command: string, signal?: AbortSignal): Promise<ToolResult> {
   if (!command) return { ok: false, output: 'command not specified' };
 
   const root = workspaceRoot();
@@ -136,29 +141,56 @@ async function runCommand(command: string): Promise<ToolResult> {
   return new Promise((resolve) => {
     const proc = cp.spawn(shell, [flag, command], {
       cwd: root,
-      timeout: 30_000,
       // Inherit PATH so common tools (git, npm, python…) are found
       env: { ...process.env },
     });
 
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    let aborted = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const kill = () => {
+      try { proc.kill('SIGTERM'); } catch { /* already dead */ }
+      killTimer = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+      }, 2_000);
+    };
+
+    const timeout = setTimeout(() => { timedOut = true; kill(); }, COMMAND_TIMEOUT_MS);
+    const onAbort = () => { aborted = true; kill(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      signal?.removeEventListener('abort', onAbort);
+    };
 
     proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
     proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
 
     proc.on('close', (code) => {
-      const combined = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
-      const truncated = combined.length > 4000
-        ? combined.slice(0, 4000) + '\n… (output truncated)'
-        : combined;
+      cleanup();
+      let combined = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
+      if (combined.length > 4000) combined = combined.slice(0, 4000) + '\n… (output truncated)';
+      if (aborted) {
+        resolve({ ok: false, output: 'Command aborted by user.' + (combined ? `\nPartial output:\n${combined}` : '') });
+        return;
+      }
+      if (timedOut) {
+        resolve({ ok: false, output: `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s.` + (combined ? `\nPartial output:\n${combined}` : '') });
+        return;
+      }
       resolve({
         ok: code === 0,
-        output: truncated || `(exited with code ${code})`,
+        output: combined || `(exited with code ${code})`,
       });
     });
 
     proc.on('error', (err) => {
+      cleanup();
       resolve({ ok: false, output: `Failed to run command: ${err.message}` });
     });
   });
@@ -174,25 +206,83 @@ async function listFiles(dirPath: string): Promise<ToolResult> {
   return { ok: true, output: lines.join('\n') || '(empty directory)' };
 }
 
-async function searchFiles(query: string, dirPath?: string): Promise<ToolResult> {
+const BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tar|jar|class|exe|dll|so|dylib|woff2?|ttf|eot|mp[34]|mov|avi|bin|lock)$/i;
+
+async function searchFiles(query: string, dirPath?: string, useRegex?: boolean): Promise<ToolResult> {
   if (!query) return { ok: false, output: 'search query not specified' };
   const include = dirPath ? `${dirPath}/**` : '**';
-  const results = await vscode.workspace.findFiles(include, '**/node_modules/**', 30);
+  const results = await vscode.workspace.findFiles(include, '{**/node_modules/**,**/.git/**}', 200);
 
+  let note = '';
+  let matcher: (line: string) => boolean;
+  if (useRegex) {
+    try {
+      const re = new RegExp(query, 'i');
+      matcher = (line) => re.test(line);
+    } catch {
+      note = `(invalid regex "${query}" — fell back to literal search)\n`;
+      const q = query.toLowerCase();
+      matcher = (line) => line.toLowerCase().includes(q);
+    }
+  } else {
+    const q = query.toLowerCase();
+    matcher = (line) => line.toLowerCase().includes(q);
+  }
+
+  const MAX_MATCHES = 100;
   const matches: string[] = [];
   for (const uri of results) {
+    if (matches.length >= MAX_MATCHES) break;
+    if (BINARY_EXT.test(uri.path)) continue;
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
       const text = Buffer.from(bytes).toString('utf-8');
-      if (text.toLowerCase().includes(query.toLowerCase())) {
-        const rel = vscode.workspace.asRelativePath(uri);
-        const lineNum = text.split('\n').findIndex((l) => l.toLowerCase().includes(query.toLowerCase()));
-        matches.push(`${rel}:${lineNum + 1}`);
+      const rel = vscode.workspace.asRelativePath(uri);
+      const lines = text.split('\n');
+      for (let ln = 0; ln < lines.length && matches.length < MAX_MATCHES; ln++) {
+        if (matcher(lines[ln])) {
+          matches.push(`${rel}:${ln + 1}: ${lines[ln].trim().slice(0, 120)}`);
+        }
       }
     } catch { /* skip unreadable files */ }
   }
   return {
     ok: true,
-    output: matches.length ? matches.join('\n') : `No results found for "${query}"`,
+    output: note + (matches.length ? matches.join('\n') : `No results found for "${query}"`),
+  };
+}
+
+function getDiagnostics(filePath?: string): ToolResult {
+  const MAX_LINES = 50;
+  const severityNames = ['Error', 'Warning'];
+
+  let entries: Array<[vscode.Uri, readonly vscode.Diagnostic[]]>;
+  if (filePath) {
+    const uri = resolveUri(filePath);
+    entries = [[uri, vscode.languages.getDiagnostics(uri)]];
+  } else {
+    entries = [...vscode.languages.getDiagnostics()];
+  }
+
+  const lines: string[] = [];
+  for (const [uri, diags] of entries) {
+    if (lines.length >= MAX_LINES) break;
+    const rel = vscode.workspace.asRelativePath(uri);
+    for (const d of diags) {
+      if (lines.length >= MAX_LINES) break;
+      if (d.severity > vscode.DiagnosticSeverity.Warning) continue; // errors + warnings only
+      const code = typeof d.code === 'object' && d.code !== null ? d.code.value : d.code;
+      lines.push(
+        `${rel}:${d.range.start.line + 1}:${d.range.start.character + 1} ` +
+        `[${severityNames[d.severity]}] ${d.message}${code !== undefined && code !== '' ? ` (${code})` : ''}`
+      );
+    }
+  }
+
+  return {
+    ok: true,
+    output: lines.length
+      ? lines.join('\n')
+      : '(no diagnostics found — language services may still be analyzing recently edited files)',
   };
 }

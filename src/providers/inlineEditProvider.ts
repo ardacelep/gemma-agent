@@ -1,32 +1,71 @@
 import * as vscode from 'vscode';
-import { ollamaGenerate, isOllamaRunning } from '../ollama/client';
+import { OllamaMessage, describeOllamaError, isOllamaRunning, ollamaChat } from '../ollama/client';
 
-const GEMMA_SCHEME = 'gemma-proposed';
+/**
+ * Inline edit: streams the model's rewrite directly into the editor as one
+ * undo unit, highlights it with a decoration, and offers Accept / Reject
+ * CodeLenses (⌘⏎ / Esc). Works on a selection (edit mode) or at the cursor
+ * (insert mode). Continue.dev-style — VS Code extensions cannot render
+ * Copilot's proprietary floating inline-chat widget.
+ */
 
-// Module-level registry for diff virtual document content
-const proposedContents = new Map<string, string>();
-
-// Provider registered once (lazy)
-let diffProvider: vscode.Disposable | undefined;
-function ensureDiffProvider(): void {
-  if (diffProvider) return;
-  diffProvider = vscode.workspace.registerTextDocumentContentProvider(GEMMA_SCHEME, {
-    provideTextDocumentContent(uri: vscode.Uri): string {
-      return proposedContents.get(uri.toString()) ?? '';
-    },
-  });
-}
-
-const SYSTEM = `You are an inline code editor. The user will give you a code snippet and an instruction.
-Apply the instruction to the code and return ONLY the modified code.
+const SYSTEM = `You are an inline code editor. Apply the user's instruction and return ONLY code.
 Rules:
 - Output raw code only — no markdown fences, no explanations, no comments about what changed.
 - Preserve the EXACT original indentation style (spaces vs tabs, indentation depth).
-- Preserve the language idioms and surrounding code style.
-- If the instruction cannot be applied sensibly, return the original code unchanged.
+- Match the language idioms and surrounding code style.
 - Do NOT add or remove blank lines at the start or end of the output unless the instruction requires it.`;
 
-function buildPrompt(code: string, lang: string, instruction: string): string {
+/** Trailing chars held back per chunk so closing fences / [CURSOR] echoes can be stripped. */
+const STREAM_HOLDBACK = 8;
+
+interface InlineEditSession {
+  editor: vscode.TextEditor;
+  docUri: string;
+  startOffset: number;
+  originalText: string; // '' in insert mode
+  streamedLength: number;
+  state: 'streaming' | 'review';
+  abort: AbortController;
+  applyingEdit: boolean; // true while our own edits are in flight
+}
+
+let session: InlineEditSession | undefined;
+let decorationType: vscode.TextEditorDecorationType | undefined;
+const codeLensEmitter = new vscode.EventEmitter<void>();
+
+class InlineEditCodeLensProvider implements vscode.CodeLensProvider {
+  onDidChangeCodeLenses = codeLensEmitter.event;
+
+  provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+    if (!session || session.state !== 'review') return [];
+    if (document.uri.toString() !== session.docUri) return [];
+    const line = document.positionAt(session.startOffset).line;
+    const range = new vscode.Range(line, 0, line, 0);
+    const accept = process.platform === 'darwin' ? '⌘⏎' : 'Ctrl+Enter';
+    return [
+      new vscode.CodeLens(range, { title: `✓ Accept (${accept})`, command: 'gemmaAgent.inlineEditAccept' }),
+      new vscode.CodeLens(range, { title: '✗ Reject (Esc)', command: 'gemmaAgent.inlineEditReject' }),
+    ];
+  }
+}
+
+export function registerInlineEdit(context: vscode.ExtensionContext): void {
+  decorationType = vscode.window.createTextEditorDecorationType({
+    backgroundColor: new vscode.ThemeColor('diffEditor.insertedTextBackground'),
+  });
+  context.subscriptions.push(
+    decorationType,
+    vscode.languages.registerCodeLensProvider('*', new InlineEditCodeLensProvider()),
+    vscode.commands.registerCommand('gemmaAgent.inlineEditAccept', acceptInlineEdit),
+    vscode.commands.registerCommand('gemmaAgent.inlineEditReject', rejectInlineEdit),
+    vscode.workspace.onDidChangeTextDocument(onDocChanged),
+    vscode.workspace.onDidCloseTextDocument(onDocClosed),
+    { dispose: () => void endSession() }
+  );
+}
+
+function buildEditPrompt(code: string, lang: string, instruction: string): string {
   return `Language: ${lang}
 Instruction: ${instruction}
 
@@ -38,135 +77,260 @@ ${code}
 Return only the edited code:`;
 }
 
-function extractCode(raw: string, lang: string): string {
-  let text = raw.trim();
-  // Strip fenced code block if model wrapped output
-  const fenced = new RegExp(`^\`\`\`(?:${lang})?\\s*\\n?([\\s\\S]*?)\\n?\`\`\`\\s*$`, 'i');
-  const match = text.match(fenced);
-  if (match) return match[1];
-  // Strip any opening/closing fences without language tag
-  text = text.replace(/^```\w*\n?/, '').replace(/\n?```$/, '');
-  return text;
+function buildInsertPrompt(before: string, after: string, lang: string, instruction: string): string {
+  return `Language: ${lang}
+Instruction: ${instruction}
+
+The new code will be inserted at [CURSOR]. Surrounding code:
+\`\`\`${lang}
+${before}[CURSOR]${after}
+\`\`\`
+
+Return only the code to insert at [CURSOR]:`;
 }
 
 export async function inlineEdit(editor: vscode.TextEditor): Promise<void> {
-  if (editor.selection.isEmpty) {
-    vscode.window.showWarningMessage('Select code to edit first.');
-    return;
-  }
-
   if (!await isOllamaRunning()) {
-    vscode.window.showErrorMessage('Ollama is not running. Run `ollama serve`.');
+    vscode.window.showErrorMessage('Ollama is not running. Start it from the Gemma chat panel or run `ollama serve`.');
     return;
   }
 
+  // Starting a new session auto-rejects a pending one
+  if (session) await rejectInlineEdit();
+
+  const hasSelection = !editor.selection.isEmpty;
   const instruction = await vscode.window.showInputBox({
-    title: 'Gemma — Inline Edit',
-    prompt: 'What should be done with this code?',
-    placeHolder: 'e.g. "refactor", "convert to TypeScript", "fix errors", "make more efficient"',
+    title: hasSelection ? 'Gemma Inline Edit' : 'Gemma Inline Edit — insert at cursor',
+    prompt: hasSelection ? 'What should be done with the selected code?' : 'What code should be inserted at the cursor?',
+    placeHolder: hasSelection
+      ? 'e.g. "add docstrings", "convert to async", "fix errors"'
+      : 'e.g. "a function that validates the config object"',
     ignoreFocusOut: true,
   });
   if (!instruction) return;
 
-  const originalSelection = editor.selection;
-  const originalCode = editor.document.getText(originalSelection);
-  const lang = editor.document.languageId;
+  const doc = editor.document;
+  const lang = doc.languageId;
+  const selection = editor.selection;
+  const startOffset = doc.offsetAt(selection.start);
+  const originalText = hasSelection ? doc.getText(selection) : '';
 
-  let proposed: string | undefined;
+  let prompt: string;
+  if (hasSelection) {
+    prompt = buildEditPrompt(originalText, lang, instruction);
+  } else {
+    const beforeRange = new vscode.Range(new vscode.Position(Math.max(0, selection.start.line - 40), 0), selection.start);
+    const afterRange = new vscode.Range(selection.end, new vscode.Position(Math.min(doc.lineCount - 1, selection.end.line + 15), 0));
+    prompt = buildInsertPrompt(doc.getText(beforeRange), doc.getText(afterRange), lang, instruction);
+  }
 
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: `Gemma: "${instruction}"`,
-      cancellable: true,
-    },
-    async (_progress, token) => {
-      const abort = new AbortController();
-      token.onCancellationRequested(() => abort.abort());
+  session = {
+    editor,
+    docUri: doc.uri.toString(),
+    startOffset,
+    originalText,
+    streamedLength: 0,
+    state: 'streaming',
+    abort: new AbortController(),
+    applyingEdit: false,
+  };
+  await vscode.commands.executeCommand('setContext', 'gemmaAgent.inlineEditActive', true);
 
-      let result: string;
-      try {
-        result = await ollamaGenerate({
-          prompt: buildPrompt(originalCode, lang, instruction),
-          system: SYSTEM,
-          maxTokens: 1024,
-          signal: abort.signal,
-        });
-      } catch (err: unknown) {
-        if ((err as Error).name !== 'AbortError') {
-          vscode.window.showErrorMessage(`Gemma error: ${(err as Error).message}`);
-        }
-        return;
-      }
-
-      if (token.isCancellationRequested) return;
-
-      proposed = extractCode(result, lang);
-      if (!proposed || proposed === originalCode) {
-        vscode.window.showInformationMessage('Gemma: No changes suggested.');
-        proposed = undefined;
-      }
+  // Edit mode: remove the selection first — same undo unit as the stream
+  if (hasSelection) {
+    session.applyingEdit = true;
+    const removed = await editor.edit((eb) => eb.delete(selection), { undoStopBefore: true, undoStopAfter: false });
+    session.applyingEdit = false;
+    if (!removed) {
+      await endSession();
+      return;
     }
+  }
+
+  try {
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Window, title: `Gemma: ${instruction}` },
+      () => streamResponse(prompt, session!.abort.signal)
+    );
+  } catch (err) {
+    const wasAbort = (err as Error).name === 'AbortError';
+    if (!wasAbort) {
+      vscode.window.showErrorMessage(`Gemma inline edit failed: ${describeOllamaError(err)}`);
+    }
+    if (session) await restoreOriginal();
+    return;
+  }
+
+  if (!session) return; // torn down mid-stream (doc closed, rejected)
+
+  if (session.state === 'streaming') {
+    if (session.streamedLength === 0) {
+      vscode.window.showInformationMessage('Gemma: No changes suggested.');
+      await restoreOriginal();
+      return;
+    }
+    session.state = 'review';
+  }
+  codeLensEmitter.fire();
+}
+
+async function streamResponse(prompt: string, signal: AbortSignal): Promise<void> {
+  const messages: OllamaMessage[] = [
+    { role: 'system', content: SYSTEM },
+    { role: 'user', content: prompt },
+  ];
+
+  let pending = '';
+  let firstLineChecked = false;
+
+  for await (const chunk of ollamaChat({ messages, signal })) {
+    if (!session || session.state !== 'streaming') return;
+    pending += chunk;
+
+    // Drop a leading ```lang fence line once the full first line has arrived
+    if (!firstLineChecked) {
+      const nl = pending.indexOf('\n');
+      if (nl === -1) continue;
+      if (/^```[\w-]*$/.test(pending.slice(0, nl).trim())) {
+        pending = pending.slice(nl + 1);
+      }
+      firstLineChecked = true;
+    }
+
+    // Hold back a tail that might be part of a closing fence or [CURSOR] echo
+    if (pending.length > STREAM_HOLDBACK) {
+      const out = pending.slice(0, pending.length - STREAM_HOLDBACK).replace(/\[CURSOR\]/g, '');
+      pending = pending.slice(pending.length - STREAM_HOLDBACK);
+      if (out) await insertChunk(out);
+    }
+  }
+
+  if (!session || session.state !== 'streaming') return;
+
+  // End of stream — strip the closing fence / cursor echo and flush the rest
+  let tail = pending.replace(/\[CURSOR\]/g, '');
+  if (!firstLineChecked && /^```[\w-]*$/.test(tail.trim())) tail = '';
+  tail = tail.replace(/\s*```\s*$/, '').replace(/\s+$/, '');
+  if (tail) await insertChunk(tail);
+}
+
+async function insertChunk(text: string): Promise<void> {
+  if (!session) return;
+  const { editor } = session;
+  const pos = editor.document.positionAt(session.startOffset + session.streamedLength);
+  session.applyingEdit = true;
+  let ok = false;
+  try {
+    ok = await editor.edit((eb) => eb.insert(pos, text), { undoStopBefore: false, undoStopAfter: false });
+  } finally {
+    session.applyingEdit = false;
+  }
+  if (!ok) throw new Error('Could not apply the edit to the document.');
+  session.streamedLength += text.length;
+  updateDecoration();
+}
+
+function updateDecoration(): void {
+  if (!session || !decorationType) return;
+  const doc = session.editor.document;
+  const range = new vscode.Range(
+    doc.positionAt(session.startOffset),
+    doc.positionAt(session.startOffset + session.streamedLength)
   );
+  session.editor.setDecorations(decorationType, session.streamedLength > 0 ? [range] : []);
+}
 
-  if (!proposed) return;
+async function acceptInlineEdit(): Promise<void> {
+  if (!session) return;
+  const { editor } = session;
+  // The streamed text is already in the document — just add an undo stop
+  session.applyingEdit = true;
+  try {
+    await editor.edit(() => { /* no-op for the undo stop */ }, { undoStopBefore: false, undoStopAfter: true });
+  } finally {
+    session.applyingEdit = false;
+  }
+  await endSession();
+}
 
-  // Show diff preview: original selection vs proposed
-  ensureDiffProvider();
+async function rejectInlineEdit(): Promise<void> {
+  if (!session) return;
+  session.abort.abort(); // stop the stream if still running
+  await restoreOriginal();
+}
 
-  const docUri = editor.document.uri;
-  const virtualUri = vscode.Uri.from({
-    scheme: GEMMA_SCHEME,
-    path: docUri.path,
-    query: `ts=${Date.now()}`,
-  });
+async function restoreOriginal(): Promise<void> {
+  if (!session) return;
+  const { editor, startOffset, streamedLength, originalText } = session;
+  const doc = editor.document;
+  if (streamedLength > 0 || originalText) {
+    const range = new vscode.Range(doc.positionAt(startOffset), doc.positionAt(startOffset + streamedLength));
+    const we = new vscode.WorkspaceEdit();
+    we.replace(doc.uri, range, originalText);
+    session.applyingEdit = true;
+    try {
+      await vscode.workspace.applyEdit(we);
+    } finally {
+      if (session) session.applyingEdit = false;
+    }
+  }
+  await endSession();
+}
 
-  proposedContents.set(virtualUri.toString(), proposed);
+async function endSession(): Promise<void> {
+  if (!session) return;
+  const s = session;
+  session = undefined;
+  s.abort.abort();
+  if (decorationType) {
+    try { s.editor.setDecorations(decorationType, []); } catch { /* editor disposed */ }
+  }
+  codeLensEmitter.fire();
+  await vscode.commands.executeCommand('setContext', 'gemmaAgent.inlineEditActive', false);
+}
 
-  // Build a full virtual document that replaces the selection with proposed
-  const fullText = editor.document.getText();
-  const startOffset = editor.document.offsetAt(originalSelection.start);
-  const endOffset   = editor.document.offsetAt(originalSelection.end);
-  const fullProposed = fullText.slice(0, startOffset) + proposed + fullText.slice(endOffset);
+/** Track foreign edits: shift offsets, or bail out when the live range is touched. */
+function onDocChanged(e: vscode.TextDocumentChangeEvent): void {
+  if (!session || session.applyingEdit) return;
+  if (e.document.uri.toString() !== session.docUri) return;
 
-  const fullVirtualUri = vscode.Uri.from({
-    scheme: GEMMA_SCHEME,
-    path: docUri.path,
-    query: `full_ts=${Date.now()}`,
-  });
-  proposedContents.set(fullVirtualUri.toString(), fullProposed);
+  const start = session.startOffset;
+  const end = session.startOffset + session.streamedLength;
+  let touchedInside = false;
+  let touchedBoundary = false;
 
-  // Show diff of the full file (original vs proposed) so context is visible
-  await vscode.commands.executeCommand(
-    'vscode.diff',
-    docUri,
-    fullVirtualUri,
-    `${vscode.workspace.asRelativePath(docUri)} ↔ Gemma Suggestion`,
-    { preview: true, preserveFocus: false }
-  );
+  for (const change of e.contentChanges) {
+    const delta = change.text.length - change.rangeLength;
+    const cStart = change.rangeOffset;
+    const cEnd = change.rangeOffset + change.rangeLength;
+    if (cEnd <= start) {
+      session.startOffset += delta;
+    } else if (cStart >= start && cEnd <= end) {
+      session.streamedLength += delta;
+      touchedInside = true;
+    } else {
+      touchedBoundary = true;
+    }
+  }
 
-  const action = await vscode.window.showInformationMessage(
-    `Apply Gemma's suggestion for "${instruction}"?`,
-    { modal: false },
-    'Apply',
-    'Discard'
-  );
+  if (touchedBoundary) {
+    // The proposal region was corrupted — leave the document as-is
+    void endSession();
+    return;
+  }
+  if (touchedInside) {
+    if (session.state === 'streaming') {
+      // The user started typing into the proposal — stop streaming, let them review
+      session.abort.abort();
+      session.state = 'review';
+      codeLensEmitter.fire();
+    }
+    updateDecoration();
+  }
+}
 
-  // Cleanup virtual docs
-  proposedContents.delete(virtualUri.toString());
-  proposedContents.delete(fullVirtualUri.toString());
-
-  // Close the diff editor
-  await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-
-  if (action !== 'Apply') return;
-
-  // Apply using WorkspaceEdit for proper undo stack
-  const we = new vscode.WorkspaceEdit();
-  we.replace(docUri, originalSelection, proposed);
-  const applied = await vscode.workspace.applyEdit(we);
-
-  if (!applied) {
-    vscode.window.showErrorMessage('Could not apply the edit.');
+function onDocClosed(doc: vscode.TextDocument): void {
+  if (session && doc.uri.toString() === session.docUri) {
+    void endSession();
   }
 }

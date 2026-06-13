@@ -53,15 +53,20 @@
       },
       {
         "command": "gemmaAgent.startOllama",
-        "title": "Gemma: Ollama'yı Başlat"
+        "title": "Gemma: Start Ollama"
       },
       {
         "command": "gemmaAgent.pullModel",
-        "title": "Gemma: Model İndir (ollama pull)"
+        "title": "Gemma: Pull Model (ollama pull)"
       },
       {
         "command": "gemmaAgent.inlineEdit",
-        "title": "Gemma: Inline Düzenle"
+        "title": "Gemma: Inline Edit"
+      },
+      {
+        "command": "gemmaAgent.generateCommitMessage",
+        "title": "Gemma: Generate Commit Message",
+        "icon": "$(sparkle)"
       }
     ],
     "menus": {
@@ -70,6 +75,13 @@
           "command": "gemmaAgent.openChat",
           "group": "navigation",
           "icon": "media/icon.svg"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "gemmaAgent.generateCommitMessage",
+          "group": "navigation",
+          "when": "scmProvider == git"
         }
       ],
       "editor/context": [
@@ -141,6 +153,13 @@
           "default": 4096,
           "description": "Max tokens for chat responses"
         },
+        "gemmaAgent.numCtx": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 2048,
+          "maximum": 131072,
+          "description": "Context window size (num_ctx) sent to Ollama. Larger values use more RAM."
+        },
         "gemmaAgent.codeActionsEnabled": {
           "type": "boolean",
           "default": true,
@@ -164,12 +183,36 @@
           "maximum": 30,
           "description": "Maximum number of tool-call iterations the agent will perform before stopping"
         },
+        "gemmaAgent.agentRequireApproval": {
+          "type": "string",
+          "default": "commands",
+          "enum": ["commands", "commandsAndWrites", "never"],
+          "enumDescriptions": [
+            "Ask before the agent runs shell commands",
+            "Ask before shell commands AND file create/edit operations",
+            "Never ask — the agent runs all tools automatically"
+          ],
+          "description": "Which agent tools require your approval before they run"
+        },
         "gemmaAgent.completionMaxTokens": {
           "type": "number",
           "default": 150,
           "minimum": 32,
           "maximum": 512,
           "description": "Maximum tokens generated for inline code completions"
+        },
+        "gemmaAgent.completionLanguages": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" },
+          "default": { "*": true, "markdown": false, "plaintext": false, "scminput": false },
+          "description": "Enable/disable inline completion per language id. \"*\" is the default for unlisted languages."
+        },
+        "gemmaAgent.completionAlternatives": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Number of completion suggestions to generate (cycle with Alt+] / Alt+[). Values above 1 multiply completion latency with a local model."
         }
       }
     },
@@ -189,7 +232,24 @@
         "command": "gemmaAgent.inlineEdit",
         "key": "ctrl+shift+i",
         "mac": "cmd+shift+i",
-        "when": "editorHasSelection"
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "gemmaAgent.inlineEditAccept",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "gemmaAgent.inlineEditActive && editorTextFocus"
+      },
+      {
+        "command": "gemmaAgent.inlineEditReject",
+        "key": "escape",
+        "when": "gemmaAgent.inlineEditActive && editorTextFocus"
+      },
+      {
+        "command": "editor.action.inlineSuggest.acceptNextWord",
+        "key": "ctrl+right",
+        "mac": "cmd+right",
+        "when": "inlineSuggestionVisible && textInputFocus && !editorReadonly"
       }
     ]
   },
