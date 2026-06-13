@@ -502,6 +502,19 @@ body {
   border-radius: 20px;
   padding: 2px 10px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.notice-action {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 20px;
+  border: none;
+  cursor: pointer;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
 }
 
 /* ── Messages wrapper (contains messages + scroll button) */

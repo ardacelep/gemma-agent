@@ -9,6 +9,7 @@ import { Checkpoint } from '../agent/checkpoints';
 import { applyEdit } from '../agent/editApply';
 import { resolveUri, ToolCall } from '../agent/tools';
 import { PreviewContentProvider } from './previewContentProvider';
+import { WorkspaceIndex } from '../index/workspaceIndex';
 import {
   Entry, Session, StoreV2,
   autoTitle, capStore, entriesToMessages, isDefaultTitle, migrateV1, newSession, parseStoreV2,
@@ -65,7 +66,8 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly backend: BackendService
+    private readonly backend: BackendService,
+    private readonly workspaceIndex?: WorkspaceIndex
   ) {
     this.extensionUri = context.extensionUri;
     this.preview = PreviewContentProvider.register(context);
@@ -282,6 +284,9 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
         }
         case 'openSettings':
           await vscode.commands.executeCommand('workbench.action.openSettings', 'gemmaAgent');
+          break;
+        case 'buildIndex':
+          await vscode.commands.executeCommand('gemmaAgent.buildIndex');
           break;
         case 'regenerate': {
           // Remove the last assistant + user entries; handleUserMessage re-adds the user turn
@@ -554,13 +559,35 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    let content = text;
-    if (contexts && contexts.length > 0) {
-      const parts = contexts.map(
-        (c) => `**${c.name}:**\n\`\`\`${c.lang}\n${c.content}\n\`\`\``
-      );
-      content = `${text}\n\n${parts.join('\n\n')}`;
+    // @workspace: prepend a semantic-search context block from the local index
+    const wsMatch = /^@workspace\s+([\s\S]+)/.exec(text);
+    let workspaceBlock = '';
+    if (wsMatch) {
+      const queryText = wsMatch[1];
+      text = queryText; // strip the prefix from the visible prompt
+      if (this.workspaceIndex && this.workspaceIndex.status !== 'none') {
+        try {
+          const hits = await this.workspaceIndex.query(queryText, 8);
+          if (hits.length > 0) {
+            workspaceBlock = 'Workspace search results:\n' + hits
+              .map((h) => `${h.path}:${h.startLine}-${h.endLine}\n${h.snippet}`)
+              .join('\n\n');
+          }
+        } catch (err) {
+          this.post({ type: 'notice', text: `@workspace search failed: ${describeOllamaError(err)}` });
+        }
+      } else {
+        this.post({ type: 'notice', text: 'Workspace index not built — run "Gemma: Build Workspace Index".', action: { kind: 'buildIndex' } });
+      }
     }
+
+    let content = text;
+    const blocks: string[] = [];
+    if (workspaceBlock) blocks.push(workspaceBlock);
+    if (contexts && contexts.length > 0) {
+      blocks.push(...contexts.map((c) => `**${c.name}:**\n\`\`\`${c.lang}\n${c.content}\n\`\`\``));
+    }
+    if (blocks.length > 0) content = `${text}\n\n${blocks.join('\n\n')}`;
     this.addEntry({ kind: 'user', content, ts: Date.now() });
     this.post({ type: 'userMessage', text: content });
     this.post({ type: 'startAssistant' });

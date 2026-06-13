@@ -68,6 +68,7 @@
   let cmdMode = 'slash';
   let fileQueryDebounce;
   const FILE_REF_RE = /(^|\s)#([\w./\\-]*)$/;
+  const AT_REF_RE = /(^|\s)@(\w*)$/;
 
   function openCmdPopover(items) {
     cmdItems = items;
@@ -87,10 +88,11 @@
     cmdItems.forEach((item, idx) => {
       const row = document.createElement('div');
       row.className = 'cmd-option' + (idx === cmdSelected ? ' selected' : '');
+      const prefix = cmdMode === 'file' ? '📄 ' : cmdMode === 'at' ? '@' : '/';
       row.innerHTML = cmdMode === 'file'
-        ? `<span class="cmd-name">📄 ${escapeHtml(item.name)}</span>`
-        : `<span class="cmd-name">/${escapeHtml(item.name)}</span>` +
-          `<span class="cmd-desc">${escapeHtml(item.description)}</span>`;
+        ? `<span class="cmd-name">${prefix}${escapeHtml(item.name)}</span>`
+        : `<span class="cmd-name">${prefix}${escapeHtml(item.name)}</span>` +
+          `<span class="cmd-desc">${escapeHtml(item.description || '')}</span>`;
       row.addEventListener('click', (e) => { e.stopPropagation(); applyCmdSelection(idx); });
       cmdPopover.appendChild(row);
     });
@@ -115,6 +117,8 @@
       } else {
         vscode.postMessage({ type: 'attachFile', path: item.name });
       }
+    } else if (cmdMode === 'at') {
+      inputEl.value = inputEl.value.replace(AT_REF_RE, '$1@' + item.name + ' ');
     } else {
       inputEl.value = '/' + item.name + ' ';
     }
@@ -127,6 +131,12 @@
     if (slashM && slashCommands.length) {
       const filtered = slashCommands.filter((c) => c.name.startsWith(slashM[1].toLowerCase()));
       if (filtered.length) { cmdMode = 'slash'; openCmdPopover(filtered); return; }
+    }
+    const atM = AT_REF_RE.exec(inputEl.value);
+    if (atM) {
+      const opts = [{ name: 'workspace', description: 'Search the indexed workspace' }]
+        .filter((o) => o.name.startsWith(atM[2].toLowerCase()));
+      if (opts.length) { cmdMode = 'at'; openCmdPopover(opts); return; }
     }
     const fileM = FILE_REF_RE.exec(inputEl.value);
     if (fileM) {
@@ -491,7 +501,7 @@
         break;
       case 'notice':
         flushPendingChunks();
-        appendNotice(msg.text);
+        appendNotice(msg.text, msg.action);
         break;
       case 'checkpointAvailable':
         showCheckpointBar(msg.checkpointId, msg.files);
@@ -784,11 +794,18 @@
     inputEl.focus();
   }
 
-  function appendNotice(text) {
+  function appendNotice(text, action) {
     hideEmpty();
     const div = document.createElement('div');
     div.className = 'chat-notice';
     div.textContent = text;
+    if (action && action.kind === 'buildIndex') {
+      const btn = document.createElement('button');
+      btn.className = 'notice-action';
+      btn.textContent = 'Build index';
+      btn.addEventListener('click', () => vscode.postMessage({ type: 'buildIndex' }));
+      div.appendChild(btn);
+    }
     // While streaming, place the notice above the live assistant bubble
     const wrap = assistantBubble?.closest('.message');
     if (wrap) messagesEl.insertBefore(div, wrap);

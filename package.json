@@ -105,6 +105,10 @@
         "command": "gemmaAgent.generateCommitMessage",
         "title": "Gemma: Generate Commit Message",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "gemmaAgent.buildIndex",
+        "title": "Gemma: Build Workspace Index (@workspace)"
       }
     ],
     "menus": {
@@ -181,6 +185,16 @@
           "default": "",
           "editPresentation": "multilineText",
           "description": "Custom instructions appended to every chat, agent and inline-edit system prompt. You can also create a .gemma/rules.md file in your workspace."
+        },
+        "gemmaAgent.embeddingModel": {
+          "type": "string",
+          "default": "nomic-embed-text",
+          "description": "Embedding model used for @workspace semantic search (e.g. nomic-embed-text). Pull it once with the model picker."
+        },
+        "gemmaAgent.workspaceIndexEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable @workspace semantic search. Building the index embeds your files locally (uses CPU)."
         },
         "gemmaAgent.model": {
           "type": "string",

@@ -4,6 +4,7 @@ import * as cp from 'child_process';
 import * as os from 'os';
 import { TOOL_NAMES, ToolName, ToolCall } from './toolCallParser';
 import { applyEdit } from './editApply';
+import { BINARY_EXT } from '../index/chunker';
 
 // Re-export so existing importers (agentLoop, chatProvider) keep working
 export { TOOL_NAMES, ToolName, ToolCall };
@@ -193,7 +194,6 @@ async function listFiles(dirPath: string): Promise<ToolResult> {
   return { ok: true, output: lines.join('\n') || '(empty directory)' };
 }
 
-const BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tar|jar|class|exe|dll|so|dylib|woff2?|ttf|eot|mp[34]|mov|avi|bin|lock)$/i;
 
 async function searchFiles(query: string, dirPath?: string, useRegex?: boolean): Promise<ToolResult> {
   if (!query) return { ok: false, output: 'search query not specified' };

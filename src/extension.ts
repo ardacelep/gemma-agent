@@ -11,6 +11,7 @@ import { registerScmCommands } from './providers/scmProvider';
 import { isOllamaRunning, listModels } from './llm/client';
 import { BackendService } from './llm/backendService';
 import { registerInstructions } from './llm/instructions';
+import { WorkspaceIndex } from './index/workspaceIndex';
 import { inlineEdit, registerInlineEdit } from './providers/inlineEditProvider';
 import { StatusBarManager } from './statusBar';
 
@@ -26,10 +27,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   await autoSelectModel();
 
-  const chatProvider = new GemmaChatProvider(context, backend);
+  const workspaceIndex = new WorkspaceIndex(context);
+  const chatProvider = new GemmaChatProvider(context, backend, workspaceIndex);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, chatProvider, {
       webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+
+  // @workspace index: build command + debounced incremental updates on save
+  context.subscriptions.push(
+    vscode.commands.registerCommand('gemmaAgent.buildIndex', async () => {
+      if (!vscode.workspace.getConfiguration('gemmaAgent').get<boolean>('workspaceIndexEnabled', false)) {
+        const pick = await vscode.window.showInformationMessage(
+          'Enable @workspace semantic search? It embeds your files locally.',
+          'Enable & build'
+        );
+        if (pick !== 'Enable & build') return;
+        await vscode.workspace.getConfiguration('gemmaAgent').update('workspaceIndexEnabled', true, vscode.ConfigurationTarget.Workspace);
+      }
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Gemma: building workspace index', cancellable: true },
+        (progress, token) => workspaceIndex.build(token, progress)
+      );
+    })
+  );
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      if (!vscode.workspace.getConfiguration('gemmaAgent').get<boolean>('workspaceIndexEnabled', false)) return;
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => void workspaceIndex.updateFile(doc.uri), 2000);
     })
   );
 
