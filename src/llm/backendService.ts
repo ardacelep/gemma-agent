@@ -34,7 +34,9 @@ export interface BackendState {
 
 const BACKOFF_START_MS = 5_000;
 const BACKOFF_MAX_MS = 60_000;
-const CONNECTED_POLL_MS = 120_000;
+// Poll fairly often while connected so closing the server is noticed quickly
+// (localhost /api/tags with a 2s timeout — cheap).
+const CONNECTED_POLL_MS = 15_000;
 const RECHECK_FAST_MS = 3_000; // while the setup wizard is waiting on the user
 
 /**

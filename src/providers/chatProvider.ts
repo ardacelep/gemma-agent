@@ -634,6 +634,7 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
         if (response.trim()) this.addEntry({ kind: 'assistant', content: response, ts: Date.now() });
       } else {
         this.postError(describeOllamaError(err));
+        void this.backend.refresh(); // a failed request may mean the server went away
       }
       this.post({ type: 'endAssistant' });
     }
@@ -801,6 +802,7 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
         if (fullResponse.trim()) this.addEntry({ kind: 'assistant', content: fullResponse, ts: Date.now() });
       } else {
         this.postError(describeOllamaError(err));
+        void this.backend.refresh();
       }
       this.post({ type: 'endAssistant' });
     }
