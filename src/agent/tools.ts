@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as cp from 'child_process';
 import * as os from 'os';
 import { TOOL_NAMES, ToolName, ToolCall } from './toolCallParser';
+import { applyEdit } from './editApply';
 
 // Re-export so existing importers (agentLoop, chatProvider) keep working
 export { TOOL_NAMES, ToolName, ToolCall };
@@ -77,27 +78,17 @@ async function createFile(filePath: string, content: string): Promise<ToolResult
 
 async function editFile(filePath: string, search: string, replace: string): Promise<ToolResult> {
   if (!filePath) return { ok: false, output: 'path not specified' };
-  if (search === undefined) return { ok: false, output: 'search text not specified' };
 
   const uri = resolveUri(filePath);
   const bytes = await vscode.workspace.fs.readFile(uri);
   const original = Buffer.from(bytes).toString('utf-8');
 
-  // Normalize CRLF so Windows files match correctly
-  const normalizedOriginal = original.replace(/\r\n/g, '\n');
-  const normalizedSearch   = search.replace(/\r\n/g, '\n');
-  const normalizedReplace  = (replace ?? '').replace(/\r\n/g, '\n');
-
-  if (!normalizedOriginal.includes(normalizedSearch)) {
-    const snippet = normalizedSearch.length > 80
-      ? normalizedSearch.slice(0, 80) + '…'
-      : normalizedSearch;
-    return { ok: false, output: `Text not found in ${filePath}:\n  "${snippet}"` };
+  const result = applyEdit(original, search, replace);
+  if (!result.ok) {
+    return { ok: false, output: `${result.error} (in ${filePath})` };
   }
 
-  const updated = normalizedOriginal.replace(normalizedSearch, normalizedReplace);
-  await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf-8'));
-
+  await vscode.workspace.fs.writeFile(uri, Buffer.from(result.content!, 'utf-8'));
   return { ok: true, output: `Edited: ${filePath}` };
 }
 

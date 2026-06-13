@@ -51,6 +51,45 @@ export class Checkpoint {
     return [...this.snapshots.values()].map((s) => s.relPath);
   }
 
+  /** Was this file created by the agent (didn't exist before)? */
+  wasCreated(relPath: string): boolean {
+    const snap = this.byRel(relPath);
+    return !!snap && !snap.existedBefore;
+  }
+
+  /** The pre-mutation content of a file (undefined for created/too-large files). */
+  snapshotContent(relPath: string): string | undefined {
+    const snap = this.byRel(relPath);
+    if (!snap || !snap.existedBefore || snap.tooLarge || !snap.content) return undefined;
+    return Buffer.from(snap.content).toString('utf-8');
+  }
+
+  private byRel(relPath: string): FileSnapshot | undefined {
+    for (const snap of this.snapshots.values()) {
+      if (snap.relPath === relPath) return snap;
+    }
+    return undefined;
+  }
+
+  /** Restore a single file; forget it afterward so the review bar can update. */
+  async restoreFile(relPath: string): Promise<{ ok: boolean; error?: string }> {
+    const snap = this.byRel(relPath);
+    if (!snap) return { ok: false, error: 'unknown file' };
+    try {
+      if (!snap.existedBefore) {
+        await vscode.workspace.fs.delete(snap.uri, { useTrash: false });
+      } else if (snap.tooLarge || !snap.content) {
+        return { ok: false, error: 'too large to snapshot' };
+      } else {
+        await vscode.workspace.fs.writeFile(snap.uri, snap.content);
+      }
+      this.snapshots.delete(snap.uri.fsPath);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
   /** Write snapshots back; delete files the agent created. */
   async restore(): Promise<{ restored: string[]; failed: string[] }> {
     const restored: string[] = [];

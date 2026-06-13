@@ -876,13 +876,20 @@
     if (requiresApproval) {
       const actions = document.createElement('div');
       actions.className = 'tool-approval';
+      const canDiff = tool.tool === 'create_file' || tool.tool === 'edit_file';
       actions.innerHTML =
+        (canDiff ? `<button class="approval-btn diff" data-act="diff">⎘ View diff</button>` : '') +
         `<button class="approval-btn approve" data-decision="approve">✓ Approve</button>` +
         `<button class="approval-btn deny" data-decision="deny">✗ Deny</button>` +
         `<button class="approval-btn always" data-decision="always">Always allow</button>`;
       actions.querySelectorAll('button').forEach((btn) => {
         btn.addEventListener('click', () => {
-          vscode.postMessage({ type: 'toolApproval', callId, decision: /** @type {HTMLButtonElement} */ (btn).dataset.decision });
+          const b = /** @type {HTMLButtonElement} */ (btn);
+          if (b.dataset.act === 'diff') {
+            vscode.postMessage({ type: 'previewToolDiff', callId });
+          } else {
+            vscode.postMessage({ type: 'toolApproval', callId, decision: b.dataset.decision });
+          }
         });
       });
       card.appendChild(actions);
@@ -931,41 +938,48 @@
     scrollToBottomIfSticky();
   }
 
-  // ── Checkpoint (undo agent edits) bar ─────────────────
+  // ── Review bar (changed files: Review / Keep all / Undo all) ──────────
   /** @type {HTMLDivElement|null} */
   let checkpointBar = null;
+  let checkpointBarId = '';
 
   function showCheckpointBar(checkpointId, files) {
-    // Only the latest checkpoint is restorable — retire the previous bar
-    if (checkpointBar) {
-      const old = checkpointBar.querySelector('button');
-      if (old && !old.disabled) { old.disabled = true; old.textContent = 'Superseded'; }
+    // Re-entrant: the extension re-sends this to update the file count during review
+    if (checkpointBar && checkpointBarId === checkpointId) {
+      if (!files || files.length === 0) { markCheckpointRestored([]); return; }
+      renderCheckpointBar(checkpointBar, checkpointId, files);
+      return;
     }
+    // A new run supersedes any previous bar
+    if (checkpointBar) checkpointBar.remove();
     const bar = document.createElement('div');
     bar.className = 'checkpoint-bar';
-    const btn = document.createElement('button');
-    btn.className = 'undo-btn';
-    btn.textContent = `↩ Undo edits (${files.length} file${files.length > 1 ? 's' : ''})`;
-    btn.title = files.join('\n');
-    btn.addEventListener('click', () => {
-      btn.disabled = true;
-      btn.textContent = 'Restoring…';
-      vscode.postMessage({ type: 'undoCheckpoint', checkpointId });
-    });
-    bar.appendChild(btn);
+    renderCheckpointBar(bar, checkpointId, files);
     messagesEl.appendChild(bar);
     checkpointBar = bar;
+    checkpointBarId = checkpointId;
     scrollToBottomIfSticky();
   }
 
-  function markCheckpointRestored(failed) {
+  function renderCheckpointBar(bar, checkpointId, files) {
+    const n = files.length;
+    bar.innerHTML =
+      `<span class="cb-label">${n} file${n > 1 ? 's' : ''} changed</span>` +
+      `<button class="cb-btn" data-cb="review">Review</button>` +
+      `<button class="cb-btn" data-cb="keep">Keep all</button>` +
+      `<button class="cb-btn danger" data-cb="undo">Undo all</button>`;
+    bar.querySelector('[data-cb="review"]')?.addEventListener('click', () => vscode.postMessage({ type: 'reviewChanges' }));
+    bar.querySelector('[data-cb="keep"]')?.addEventListener('click', () => { vscode.postMessage({ type: 'keepCheckpoint' }); markCheckpointRestored([], 'Kept'); });
+    bar.querySelector('[data-cb="undo"]')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'undoCheckpoint', checkpointId });
+    });
+  }
+
+  function markCheckpointRestored(failed, label) {
     if (!checkpointBar) return;
-    const btn = checkpointBar.querySelector('button');
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = failed && failed.length ? '⚠ Partially restored' : '✓ Restored';
-    }
+    checkpointBar.innerHTML = `<span class="cb-label">${failed && failed.length ? '⚠ Partially restored' : (label || '✓ Done')}</span>`;
     checkpointBar = null;
+    checkpointBarId = '';
   }
 
   // ── Syntax highlighter ────────────────────────────────

@@ -6,7 +6,9 @@ import { BackendService } from '../llm/backendService';
 import { getLastExecutions, hasTerminalCapture } from './terminalProvider';
 import { AgentHooks, runAgentLoop } from '../agent/agentLoop';
 import { Checkpoint } from '../agent/checkpoints';
-import { ToolCall } from '../agent/tools';
+import { applyEdit } from '../agent/editApply';
+import { resolveUri, ToolCall } from '../agent/tools';
+import { PreviewContentProvider } from './previewContentProvider';
 import {
   Entry, Session, StoreV2,
   autoTitle, capStore, entriesToMessages, isDefaultTitle, migrateV1, newSession, parseStoreV2,
@@ -57,12 +59,16 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
   private fileListCache?: { ts: number; files: string[] };
   /** Track the in-flight tool call so tool_result can be recorded as an entry. */
   private pendingToolEntry?: { tool: string; arg: string };
+  /** Tool calls awaiting approval, by callId — used by the "View diff" preview. */
+  private readonly pendingApprovalCalls = new Map<string, ToolCall>();
+  private readonly preview: PreviewContentProvider;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly backend: BackendService
   ) {
     this.extensionUri = context.extensionUri;
+    this.preview = PreviewContentProvider.register(context);
     this.loadStore();
     this.viewReady = new Promise((r) => { this.resolveViewReady = r; });
     // Keep the webview in sync with backend connectivity
@@ -231,6 +237,9 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'undoCheckpoint': await this.undoLastCheckpoint(); break;
+        case 'keepCheckpoint': this.lastCheckpoint = undefined; break;
+        case 'reviewChanges': await this.reviewChanges(); break;
+        case 'previewToolDiff': await this.previewToolDiff(msg.callId as string); break;
         case 'requestFileList': await this.sendFileList(msg.query as string); break;
         case 'attachFile': await this.attachFileContext(msg.path as string); break;
         case 'attachTerminal': this.attachTerminalContext(); break;
@@ -603,18 +612,99 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private confirmTool(_call: ToolCall, callId: string): Promise<'approve' | 'deny'> {
+  private confirmTool(call: ToolCall, callId: string): Promise<'approve' | 'deny'> {
     if (this.sessionAutoApprove) return Promise.resolve('approve');
+    this.pendingApprovalCalls.set(callId, call);
     return new Promise((resolve) => {
       const signal = this.activeAbort?.signal;
       const onAbort = () => { cleanup(); resolve('deny'); };
       const cleanup = () => {
         this.pendingApprovals.delete(callId);
+        this.pendingApprovalCalls.delete(callId);
         signal?.removeEventListener('abort', onAbort);
       };
       this.pendingApprovals.set(callId, (d) => { cleanup(); resolve(d); });
       signal?.addEventListener('abort', onAbort, { once: true });
     });
+  }
+
+  /** Show a non-destructive diff for a create/edit tool awaiting approval. */
+  private async previewToolDiff(callId: string): Promise<void> {
+    const call = this.pendingApprovalCalls.get(callId);
+    if (!call || typeof call.path !== 'string') return;
+    const relPath = call.path;
+    let current = '';
+    let exists = true;
+    try {
+      const bytes = await vscode.workspace.fs.readFile(resolveUri(relPath));
+      current = Buffer.from(bytes).toString('utf-8');
+    } catch {
+      exists = false;
+    }
+
+    let proposed: string;
+    if (call.tool === 'create_file') {
+      proposed = String(call.content ?? '');
+    } else if (call.tool === 'edit_file') {
+      const res = applyEdit(current, String(call.search ?? ''), String(call.replace ?? ''));
+      if (!res.ok) { vscode.window.showWarningMessage(`Gemma: cannot preview — ${res.error}`); return; }
+      proposed = res.content!;
+    } else {
+      return;
+    }
+
+    const base = relPath.split('/').pop() ?? relPath;
+    const leftUri = exists ? resolveUri(relPath) : this.preview.make('', `current/${base}`);
+    const rightUri = this.preview.make(proposed, `proposed/${base}`);
+    await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, `Gemma: ${relPath} (proposed)`);
+  }
+
+  /** Post-run review: pick a changed file, diff it, then keep or revert. */
+  private async reviewChanges(): Promise<void> {
+    const checkpoint = this.lastCheckpoint;
+    if (!checkpoint || checkpoint.files.length === 0) return;
+
+    while (true) {
+      const files = checkpoint.files;
+      if (files.length === 0) { this.post({ type: 'checkpointRestored', restored: [], failed: [] }); return; }
+      const items = files.map((f) => ({
+        label: f,
+        description: checkpoint.wasCreated(f) ? 'created' : 'modified',
+      }));
+      const pick = await vscode.window.showQuickPick([...items, { label: '$(check) Done reviewing', description: '' }], {
+        placeHolder: `${files.length} changed file${files.length > 1 ? 's' : ''} — pick one to review`,
+      });
+      if (!pick || pick.label.startsWith('$(check)')) return;
+
+      const rel = pick.label;
+      const base = rel.split('/').pop() ?? rel;
+      const before = checkpoint.snapshotContent(rel);
+      const created = checkpoint.wasCreated(rel);
+      const leftUri = created ? this.preview.make('', `before/${base}`)
+        : before !== undefined ? this.preview.make(before, `before/${base}`)
+        : undefined;
+      let curUri: vscode.Uri | undefined;
+      try { curUri = resolveUri(rel); } catch { /* deleted */ }
+      if (leftUri && curUri) {
+        await vscode.commands.executeCommand('vscode.diff', leftUri, curUri, `Gemma: ${rel} — before ↔ after`);
+      }
+
+      const action = await vscode.window.showQuickPick(
+        [
+          { label: '$(check) Keep file', id: 'keep' },
+          { label: '$(discard) Revert file', id: 'revert' },
+          { label: '$(arrow-left) Back to list', id: 'back' },
+        ],
+        { placeHolder: `${rel}` }
+      );
+      if (!action || action.id === 'back') continue;
+      if (action.id === 'revert') {
+        const res = await checkpoint.restoreFile(rel);
+        if (!res.ok) this.postError(`Could not revert ${rel}: ${res.error}`);
+      }
+      // Update the webview bar with the remaining files
+      this.post({ type: 'checkpointAvailable', checkpointId: checkpoint.id, files: checkpoint.files });
+    }
   }
 
   private async undoLastCheckpoint(): Promise<void> {
