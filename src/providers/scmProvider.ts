@@ -1,9 +1,7 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import { OllamaMessage, describeOllamaError, isOllamaRunning, ollamaChat } from '../ollama/client';
-import { estimateTokens } from '../ollama/contextWindow';
-
-const DIFF_TOKEN_CAP = 6_000;
+import { capDiff, cleanupCommitMessage } from './scmUtils';
 
 // Minimal surface of the built-in Git extension API (getAPI(1))
 interface GitRepository {
@@ -30,18 +28,6 @@ function execGitDiff(cwd: string, staged: boolean): Promise<string> {
       (err, stdout) => resolve(err ? '' : stdout)
     );
   });
-}
-
-function capDiff(diff: string): string {
-  if (estimateTokens(diff) <= DIFF_TOKEN_CAP) return diff;
-  return diff.slice(0, DIFF_TOKEN_CAP * 4) + '\n… (diff truncated)';
-}
-
-function cleanupCommitMessage(raw: string): string {
-  let text = raw.trim();
-  text = text.replace(/^```\w*\n?/, '').replace(/\n?```$/, '');
-  text = text.replace(/^["'`]+|["'`]+$/g, '');
-  return text.trim();
 }
 
 export function registerScmCommands(context: vscode.ExtensionContext): void {

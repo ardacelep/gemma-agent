@@ -1,4 +1,4 @@
-import { OllamaMessage } from './client';
+import type { OllamaMessage } from './client';
 
 /** Rough estimate: ~4 characters per token. */
 export function estimateTokens(s: string): number {

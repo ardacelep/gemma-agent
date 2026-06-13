@@ -2,14 +2,10 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as cp from 'child_process';
 import * as os from 'os';
+import { TOOL_NAMES, ToolName, ToolCall } from './toolCallParser';
 
-export const TOOL_NAMES = ['create_file', 'edit_file', 'read_file', 'run_command', 'list_files', 'search_files', 'get_diagnostics'] as const;
-export type ToolName = typeof TOOL_NAMES[number];
-
-export interface ToolCall {
-  tool: ToolName;
-  [key: string]: unknown;
-}
+// Re-export so existing importers (agentLoop, chatProvider) keep working
+export { TOOL_NAMES, ToolName, ToolCall };
 
 export interface ToolResult {
   ok: boolean;
