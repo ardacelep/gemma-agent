@@ -1,37 +1,7 @@
 import * as vscode from 'vscode';
-import { ollamaGenerate } from '../ollama/client';
-
-const COMMENT_STARTERS: Record<string, string[]> = {
-  python:        ['#'],
-  javascript:    ['//', '/*', '*'],
-  typescript:    ['//', '/*', '*'],
-  javascriptreact: ['//', '/*', '*'],
-  typescriptreact: ['//', '/*', '*'],
-  java:          ['//', '/*', '*'],
-  kotlin:        ['//', '/*', '*'],
-  scala:         ['//', '/*', '*'],
-  c:             ['//', '/*', '*', '#'],
-  cpp:           ['//', '/*', '*', '#'],
-  cuda:          ['//', '/*', '*', '#'],
-  csharp:        ['//', '/*', '*'],
-  rust:          ['//', '/*'],
-  go:            ['//', '/*'],
-  swift:         ['//', '/*', '*'],
-  ruby:          ['#'],
-  shellscript:   ['#'],
-  bash:          ['#'],
-  powershell:    ['#'],
-  perl:          ['#'],
-  r:             ['#'],
-  lua:           ['--'],
-  sql:           ['--', '/*', '*'],
-};
-
-function isCommentLine(lang: string, prefix: string): boolean {
-  const starters = COMMENT_STARTERS[lang] ?? [];
-  const trimmed = prefix.trimStart();
-  return starters.some((s) => trimmed.startsWith(s));
-}
+import { ollamaGenerate } from '../llm/client';
+import { clean, isCommentLine } from './completionClean';
+import { StatusBarManager } from '../statusBar';
 
 function buildPrompt(doc: vscode.TextDocument, position: vscode.Position): string {
   const lang = doc.languageId;
@@ -61,53 +31,13 @@ const SYSTEM =
   'Keep the completion short: finish the current expression or at most one small block. ' +
   'Match the indentation of the surrounding code exactly.';
 
-function clean(raw: string, linePrefix: string, lang: string): string {
-  let text = raw;
-
-  // Strip markdown fences the model may have wrapped output in
-  text = text.replace(/^```[\w]*\n?/, '').replace(/\n?```[\s\S]*$/, '');
-
-  // Strip [CURSOR] if model echoed it
-  text = text.replace(/\[CURSOR\]/g, '');
-
-  text = text.trim();
-
-  // Strip if model echoed the last non-empty line of our prefix
-  const lastPrefixLine = linePrefix.trimStart();
-  if (lastPrefixLine && text.startsWith(lastPrefixLine)) {
-    text = text.slice(lastPrefixLine.length);
-  }
-
-  // Cut after first blank line only if the completion is multi-paragraph (looks like explanation)
-  // Single-statement completions (e.g. one-liners) should not be cut
-  const blankLine = text.indexOf('\n\n');
-  if (blankLine !== -1) {
-    const before = text.slice(0, blankLine);
-    // Only cut if the first paragraph is more than one line (real code block) or
-    // if what follows the blank line looks like prose (no code-like characters)
-    const afterBlank = text.slice(blankLine + 2).trimStart();
-    const looksLikeProse = /^[A-Z][a-z]/.test(afterBlank);
-    if (looksLikeProse) {
-      text = before;
-    }
-  }
-
-  // Strip conversational filler
-  text = text.replace(/^(here is|sure|of course|certainly|i'll|let me)[^:]*:?\s*/i, '');
-
-  // Strip trailing blank lines only (not comment lines — they may be valid)
-  const lines = text.split('\n');
-  while (lines.length > 1 && lines[lines.length - 1].trim() === '') {
-    lines.pop();
-  }
-  text = lines.join('\n');
-
-  return text.trimEnd();
-}
-
 export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvider {
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private activeRequest: AbortController | undefined;
+  /** Resolver of a superseded request — must be settled so VS Code never waits forever. */
+  private pendingResolve: ((value: vscode.InlineCompletionList | null) => void) | undefined;
+
+  constructor(private readonly statusBar?: StatusBarManager) {}
 
   async provideInlineCompletionItems(
     document: vscode.TextDocument,
@@ -120,6 +50,10 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
 
     const linePrefix = document.lineAt(position.line).text.slice(0, position.character);
     const lang = document.languageId;
+
+    // Per-language toggle: exact language id → "*" wildcard → enabled
+    const langMap = cfg.get<Record<string, boolean>>('completionLanguages', {});
+    if (!(langMap[lang] ?? langMap['*'] ?? true)) return null;
 
     // Don't trigger on blank/whitespace-only prefix
     if (!linePrefix.trim()) return null;
@@ -136,15 +70,27 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
     }
 
     return new Promise((resolve) => {
+      // Settle the superseded request before replacing its debounce timer
+      this.pendingResolve?.(null);
+      this.pendingResolve = resolve;
+
+      const finish = (value: vscode.InlineCompletionList | null) => {
+        if (this.pendingResolve === resolve) this.pendingResolve = undefined;
+        this.statusBar?.setBusy(false);
+        resolve(value);
+      };
+
       clearTimeout(this.debounceTimer);
-      const debounceMs = cfg.get<number>('completionDebounceMs', 700);
+      const debounceMs = cfg.get<number>('completionDebounceMs', 600);
 
       this.debounceTimer = setTimeout(async () => {
-        if (token.isCancellationRequested) return resolve(null);
+        if (token.isCancellationRequested) return finish(null);
 
         this.activeRequest?.abort();
         this.activeRequest = new AbortController();
 
+        const completionModel = cfg.get<string>('completionModel', '') || undefined;
+        this.statusBar?.setBusy(true);
         try {
           const prompt = buildPrompt(document, position);
           const maxTokens = cfg.get<number>('completionMaxTokens', 150);
@@ -152,35 +98,58 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
             prompt,
             system: SYSTEM,
             maxTokens,
+            model: completionModel,
             signal: this.activeRequest.signal,
           });
 
-          if (token.isCancellationRequested || !raw.trim()) return resolve(null);
+          if (token.isCancellationRequested || !raw.trim()) return finish(null);
 
           const completion = clean(raw, linePrefix, lang);
-          if (!completion) return resolve(null);
+          if (!completion) return finish(null);
 
           // Reject if the completion looks like it's re-writing existing suffix
           const nextLineText = position.line + 1 < document.lineCount
             ? document.lineAt(position.line + 1).text.trim()
             : '';
-          if (nextLineText && completion.includes(nextLineText)) return resolve(null);
+          if (nextLineText && completion.includes(nextLineText)) return finish(null);
 
-          resolve(new vscode.InlineCompletionList([
-            new vscode.InlineCompletionItem(
-              completion,
-              new vscode.Range(position, position)
-            ),
-          ]));
+          const range = new vscode.Range(position, position);
+          const items = [new vscode.InlineCompletionItem(completion, range)];
+
+          // Optional alternatives (cycled with Alt+] / Alt+[). VS Code needs the
+          // full list up front, so each extra suggestion is one more generation.
+          const alternatives = Math.min(3, Math.max(1, cfg.get<number>('completionAlternatives', 1)));
+          for (let n = 1; n < alternatives && !token.isCancellationRequested; n++) {
+            try {
+              const altRaw = await ollamaGenerate({
+                prompt,
+                system: SYSTEM,
+                maxTokens,
+                temperature: 0.8,
+                model: completionModel,
+                signal: this.activeRequest.signal,
+              });
+              const alt = clean(altRaw, linePrefix, lang);
+              if (alt &&
+                  !items.some((it) => it.insertText === alt) &&
+                  !(nextLineText && alt.includes(nextLineText))) {
+                items.push(new vscode.InlineCompletionItem(alt, range));
+              }
+            } catch {
+              break;
+            }
+          }
+
+          finish(new vscode.InlineCompletionList(items));
         } catch {
-          resolve(null);
+          finish(null);
         }
       }, debounceMs);
 
       token.onCancellationRequested(() => {
         clearTimeout(this.debounceTimer);
         this.activeRequest?.abort();
-        resolve(null);
+        finish(null);
       });
     });
   }
@@ -188,5 +157,7 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
   dispose() {
     clearTimeout(this.debounceTimer);
     this.activeRequest?.abort();
+    this.pendingResolve?.(null);
+    this.pendingResolve = undefined;
   }
 }

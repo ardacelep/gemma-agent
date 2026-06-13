@@ -13,14 +13,20 @@
   const stopOllamaBtn  = /** @type {HTMLButtonElement} */ (document.getElementById('stopOllamaBtn'));
   const modelBadge = /** @type {HTMLButtonElement} */ (document.getElementById('modelBadge'));
   const modelPopover = /** @type {HTMLDivElement} */ (document.getElementById('modelPopover'));
-  const ollamaBanner = /** @type {HTMLDivElement} */ (document.getElementById('ollamaBanner'));
-  const startOllamaBtn = /** @type {HTMLButtonElement} */ (document.getElementById('startOllamaBtn'));
+  const setupView = /** @type {HTMLDivElement} */ (document.getElementById('setupView'));
+  const messagesWrapper = /** @type {HTMLDivElement} */ (document.getElementById('messagesWrapper'));
+  const inputArea = /** @type {HTMLDivElement} */ (document.getElementById('inputArea'));
+  const pillBar = /** @type {HTMLDivElement} */ (document.getElementById('pillBar'));
+  const sessionsBtn = /** @type {HTMLButtonElement} */ (document.getElementById('sessionsBtn'));
+  const newChatBtn = /** @type {HTMLButtonElement} */ (document.getElementById('newChatBtn'));
+  const sessionPopover = /** @type {HTMLDivElement} */ (document.getElementById('sessionPopover'));
   const agentPill    = /** @type {HTMLButtonElement} */ (document.getElementById('agentPill'));
   const modeLabel    = /** @type {HTMLSpanElement} */ (document.getElementById('modeLabel'));
   const attachBtn    = /** @type {HTMLButtonElement} */ (document.getElementById('attachBtn'));
   const attachMenu   = /** @type {HTMLDivElement} */ (document.getElementById('attachMenu'));
   const contextChips = /** @type {HTMLDivElement} */ (document.getElementById('contextChips'));
   const scrollToBottomBtn = /** @type {HTMLButtonElement} */ (document.getElementById('scrollToBottomBtn'));
+  const inputWrapper = /** @type {HTMLDivElement} */ (document.getElementById('inputWrapper'));
 
   /** @type {Array<{name: string, content: string, lang: string}>} */
   let attachedContexts = [];
@@ -35,9 +41,114 @@
   let thinkingIndicator = /** @type {HTMLDivElement|null} */ (null);
   let installedModels = /** @type {string[]} */ ([]);
   let availableModels = /** @type {string[]} */ ([]);
-  let currentModel = 'gemma4:e4b';
+  let currentModel = '';
   let popoverOpen = false;
   let userScrolledUp = false;
+  let capabilities = { canPull: true, canWarmup: true, canUnload: true, canStartStopServer: true, canListAvailable: true };
+  let serverState = 'unknown';
+  let pulls = /** @type {Record<string,{status:string,percent?:number}>} */ ({});
+  let recommendedModel = 'gemma4:e4b';
+  /** @type {Array<{id:string,title:string,updatedAt:number}>} */
+  let sessions = [];
+  let activeSessionId = '';
+  let sessionPopoverOpen = false;
+
+  /** @type {Array<{name: string, description: string}>} */
+  let slashCommands = [];
+
+  // ── Command popup (slash commands + #file references) ─
+  const cmdPopover = document.createElement('div');
+  cmdPopover.id = 'cmdPopover';
+  document.body.appendChild(cmdPopover);
+  let cmdPopoverOpen = false;
+  /** @type {Array<{name: string, description: string}>} */
+  let cmdItems = [];
+  let cmdSelected = 0;
+  /** @type {'slash' | 'file'} */
+  let cmdMode = 'slash';
+  let fileQueryDebounce;
+  const FILE_REF_RE = /(^|\s)#([\w./\\-]*)$/;
+  const AT_REF_RE = /(^|\s)@(\w*)$/;
+
+  function openCmdPopover(items) {
+    cmdItems = items;
+    cmdSelected = 0;
+    renderCmdPopover();
+    cmdPopover.classList.add('open');
+    cmdPopoverOpen = true;
+  }
+
+  function closeCmdPopover() {
+    cmdPopoverOpen = false;
+    cmdPopover.classList.remove('open');
+  }
+
+  function renderCmdPopover() {
+    cmdPopover.innerHTML = '';
+    cmdItems.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'cmd-option' + (idx === cmdSelected ? ' selected' : '');
+      const prefix = cmdMode === 'file' ? '📄 ' : cmdMode === 'at' ? '@' : '/';
+      row.innerHTML = cmdMode === 'file'
+        ? `<span class="cmd-name">${prefix}${escapeHtml(item.name)}</span>`
+        : `<span class="cmd-name">${prefix}${escapeHtml(item.name)}</span>` +
+          `<span class="cmd-desc">${escapeHtml(item.description || '')}</span>`;
+      row.addEventListener('click', (e) => { e.stopPropagation(); applyCmdSelection(idx); });
+      cmdPopover.appendChild(row);
+    });
+    positionCmdPopover();
+  }
+
+  function positionCmdPopover() {
+    const rect = inputWrapper.getBoundingClientRect();
+    cmdPopover.style.left = rect.left + 'px';
+    cmdPopover.style.width = rect.width + 'px';
+    cmdPopover.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+  }
+
+  function applyCmdSelection(idx) {
+    const item = cmdItems[idx];
+    if (!item) return;
+    if (cmdMode === 'file') {
+      // Remove the typed #partial and attach the file (or terminal output) as a chip
+      inputEl.value = inputEl.value.replace(FILE_REF_RE, '$1');
+      if (item.name.startsWith('#terminal')) {
+        vscode.postMessage({ type: 'attachTerminal' });
+      } else {
+        vscode.postMessage({ type: 'attachFile', path: item.name });
+      }
+    } else if (cmdMode === 'at') {
+      inputEl.value = inputEl.value.replace(AT_REF_RE, '$1@' + item.name + ' ');
+    } else {
+      inputEl.value = '/' + item.name + ' ';
+    }
+    closeCmdPopover();
+    inputEl.focus();
+  }
+
+  function updateCmdPopover() {
+    const slashM = /^\/(\w*)$/.exec(inputEl.value);
+    if (slashM && slashCommands.length) {
+      const filtered = slashCommands.filter((c) => c.name.startsWith(slashM[1].toLowerCase()));
+      if (filtered.length) { cmdMode = 'slash'; openCmdPopover(filtered); return; }
+    }
+    const atM = AT_REF_RE.exec(inputEl.value);
+    if (atM) {
+      const opts = [{ name: 'workspace', description: 'Search the indexed workspace' }]
+        .filter((o) => o.name.startsWith(atM[2].toLowerCase()));
+      if (opts.length) { cmdMode = 'at'; openCmdPopover(opts); return; }
+    }
+    const fileM = FILE_REF_RE.exec(inputEl.value);
+    if (fileM) {
+      cmdMode = 'file';
+      clearTimeout(fileQueryDebounce);
+      fileQueryDebounce = setTimeout(() => {
+        vscode.postMessage({ type: 'requestFileList', query: fileM[2] });
+      }, 150);
+      return; // popup opens (or refreshes) when the fileList answer arrives
+    }
+    closeCmdPopover();
+  }
 
   // ── Scroll tracking for sticky button ────────────────
   messagesEl.addEventListener('scroll', () => {
@@ -61,11 +172,20 @@
   inputEl.addEventListener('input', () => {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+    updateCmdPopover();
   });
 
   // ── Escape key: close popovers / stop generation ──────
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (cmdPopoverOpen) {
+      closeCmdPopover();
+      return;
+    }
+    if (sessionPopoverOpen) {
+      closeSessionPopover();
+      return;
+    }
     if (popoverOpen) {
       modelPopover.classList.remove('open');
       popoverOpen = false;
@@ -99,6 +219,8 @@
 
   document.addEventListener('click', () => {
     if (attachMenuOpen) { attachMenuOpen = false; attachMenu.classList.remove('open'); }
+    if (cmdPopoverOpen) closeCmdPopover();
+    if (sessionPopoverOpen) closeSessionPopover();
   });
 
   function renderChips() {
@@ -127,8 +249,19 @@
   function sendMessage() {
     const text = inputEl.value.trim();
     if (!text || isGenerating) return;
+    closeCmdPopover();
     inputEl.value = '';
     inputEl.style.height = 'auto';
+
+    // /clear runs locally — same path as the clear button
+    if (text === '/clear') {
+      messagesEl.innerHTML = '';
+      messagesEl.appendChild(emptyState);
+      emptyState.style.display = 'flex';
+      vscode.postMessage({ type: 'clearHistory' });
+      return;
+    }
+
     hideEmpty();
     const contexts = attachedContexts.length ? [...attachedContexts] : undefined;
     attachedContexts = [];
@@ -138,6 +271,11 @@
 
   sendBtn.addEventListener('click', sendMessage);
   inputEl.addEventListener('keydown', (e) => {
+    if (cmdPopoverOpen) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); cmdSelected = (cmdSelected + 1) % cmdItems.length; renderCmdPopover(); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); cmdSelected = (cmdSelected - 1 + cmdItems.length) % cmdItems.length; renderCmdPopover(); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); applyCmdSelection(cmdSelected); return; }
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
   stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'stopGeneration' }));
@@ -201,7 +339,7 @@
       });
     }
 
-    if (availableModels.length > 0) {
+    if (capabilities.canListAvailable && availableModels.length > 0) {
       const header = document.createElement('div');
       header.className = 'popover-section-header';
       header.textContent = '⬇ Available to download';
@@ -210,21 +348,31 @@
       availableModels.forEach((m) => {
         const opt = document.createElement('div');
         opt.className = 'model-option available';
-        opt.innerHTML = `<span class="model-dot available-dot"></span><span>${m}</span><button class="pull-btn" title="ollama pull ${m}">Download</button>`;
-        opt.querySelector('.pull-btn')?.addEventListener('click', (e) => {
-          e.stopPropagation();
-          modelPopover.classList.remove('open');
-          popoverOpen = false;
-          vscode.postMessage({ type: 'pullModel', model: m });
-        });
+        const job = pulls[m];
+        if (job) {
+          const pct = typeof job.percent === 'number' ? ` ${job.percent}%` : '';
+          opt.innerHTML = `<span class="model-dot available-dot"></span><span>${m}</span>` +
+            `<span class="pull-status">${escapeHtml(job.status)}${pct}</span>` +
+            `<button class="pull-btn cancel" title="Cancel">✕</button>`;
+          opt.querySelector('.pull-btn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'cancelPull', model: m });
+          });
+        } else {
+          opt.innerHTML = `<span class="model-dot available-dot"></span><span>${m}</span><button class="pull-btn" title="Download ${m}">Download</button>`;
+          opt.querySelector('.pull-btn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'pullModel', model: m });
+          });
+        }
         modelPopover.appendChild(opt);
       });
     }
 
-    if (installedModels.length === 0 && availableModels.length === 0) {
+    if (installedModels.length === 0 && (!capabilities.canListAvailable || availableModels.length === 0)) {
       const empty = document.createElement('div');
       empty.className = 'popover-section-header';
-      empty.textContent = 'Ollama offline';
+      empty.textContent = serverState === 'ready' ? 'No models' : 'Server not connected';
       modelPopover.appendChild(empty);
     }
   }
@@ -240,10 +388,48 @@
   });
 
   // ── Ollama banner ─────────────────────────────────────
-  startOllamaBtn.addEventListener('click', () => {
-    startOllamaBtn.textContent = '⏳ Starting…';
-    startOllamaBtn.disabled = true;
-    vscode.postMessage({ type: 'startOllama' });
+  // ── Empty-state suggestion chips ──────────────────────
+  document.querySelectorAll('.suggestion-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const el = /** @type {HTMLButtonElement} */ (chip);
+      const prompt = el.dataset.prompt || '';
+      const wantsAgent = el.dataset.agent === '1';
+      if (wantsAgent && !agentPill.classList.contains('active')) {
+        vscode.postMessage({ type: 'toggleAgentMode' });
+      }
+      if (prompt.endsWith(' ') || prompt === '@workspace ') {
+        // Prefill (let the user finish typing) instead of sending
+        inputEl.value = prompt;
+        inputEl.focus();
+        updateCmdPopover();
+      } else {
+        inputEl.value = prompt;
+        sendMessage();
+      }
+    });
+  });
+
+  // ── Session controls ──────────────────────────────────
+  sessionsBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleSessionPopover(); });
+  newChatBtn.addEventListener('click', () => { vscode.postMessage({ type: 'newSession' }); closeSessionPopover(); });
+  sessionPopover.addEventListener('click', (e) => e.stopPropagation());
+
+  // Setup wizard actions are delegated from rendered buttons (see renderSetup).
+  setupView.addEventListener('click', (e) => {
+    const btn = /** @type {HTMLElement} */ (e.target).closest('[data-setup-action]');
+    if (!btn) return;
+    const action = /** @type {HTMLElement} */ (btn).dataset.setupAction;
+    const value = /** @type {HTMLElement} */ (btn).dataset.value;
+    switch (action) {
+      case 'selectProvider': vscode.postMessage({ type: 'selectProviderPreset', preset: value }); break;
+      case 'install':        vscode.postMessage({ type: 'installServer' }); break;
+      case 'start':          vscode.postMessage({ type: 'startOllama' }); break;
+      case 'retry':          vscode.postMessage({ type: 'refreshModels' }); break;
+      case 'detect':         vscode.postMessage({ type: 'detectServers' }); break;
+      case 'pull':           vscode.postMessage({ type: 'pullModel', model: value }); break;
+      case 'cancelPull':     vscode.postMessage({ type: 'cancelPull', model: value }); break;
+      case 'openSettings':   vscode.postMessage({ type: 'openSettings' }); break;
+    }
   });
 
   // ── Feature pills ─────────────────────────────────────
@@ -260,15 +446,31 @@
     const msg = e.data;
     switch (msg.type) {
       case 'init':
-        installedModels = msg.installedModels ?? [];
-        availableModels = msg.availableModels ?? [];
-        currentModel = msg.currentModel ?? 'gemma4:e4b';
-        modelBadge.textContent = currentModel;
         applyFeatures(msg.features);
-        setOllamaStatus(msg.ollamaRunning);
         setAgentMode(msg.agentMode);
+        slashCommands = msg.slashCommands ?? [];
         refreshBtn.textContent = '⟳';
         refreshBtn.disabled = false;
+        break;
+      case 'backendState':
+        installedModels = msg.installedModels ?? [];
+        availableModels = msg.availableModels ?? [];
+        currentModel = msg.currentModel ?? '';
+        modelBadge.textContent = currentModel || '…';
+        capabilities = msg.capabilities ?? capabilities;
+        serverState = msg.serverState ?? 'unknown';
+        pulls = msg.pulls ?? {};
+        recommendedModel = msg.recommendedModel ?? recommendedModel;
+        applyBackendState();
+        if (popoverOpen) renderPopover();
+        break;
+      case 'pullDone':
+        if (!msg.ok && msg.error && serverState !== 'ready') renderSetup();
+        if (!msg.ok && msg.error && serverState === 'ready') appendError('Download failed: ' + msg.error);
+        break;
+      case 'detectedServers':
+        detectedServers = msg.servers ?? [];
+        if (serverState !== 'ready') renderSetup();
         break;
       case 'settingsUpdate':
         if (msg.currentModel && msg.currentModel !== currentModel) {
@@ -289,6 +491,12 @@
         modelBadge.disabled = false;
         modelBadge.classList.remove('loading');
         break;
+      case 'modelWarmupFailed':
+        modelBadge.textContent = truncateModel(msg.model);
+        modelBadge.disabled = false;
+        modelBadge.classList.remove('loading');
+        appendError(`Could not load model "${msg.model}": ${msg.message}`);
+        break;
       case 'agentMode':
         setAgentMode(msg.enabled);
         break;
@@ -304,10 +512,23 @@
       case 'toolCall':
         flushPendingChunks();
         removeThinkingIndicator();
-        appendToolCard(msg.tool);
+        appendToolCard(msg.tool, msg.callId, msg.requiresApproval);
         break;
       case 'toolResult':
-        finalizeToolCard(msg.result);
+        finalizeToolCard(msg.result, msg.callId);
+        break;
+      case 'toolApprovalResolved':
+        resolveToolApproval(msg.callId, msg.approved);
+        break;
+      case 'notice':
+        flushPendingChunks();
+        appendNotice(msg.text, msg.action);
+        break;
+      case 'checkpointAvailable':
+        showCheckpointBar(msg.checkpointId, msg.files);
+        break;
+      case 'checkpointRestored':
+        markCheckpointRestored(msg.failed);
         break;
       case 'agentThinking':
         flushPendingChunks();
@@ -323,13 +544,30 @@
         removeThinkingIndicator();
         appendError(msg.text);
         break;
-      case 'history':
-        restoreHistory(msg.messages);
+      case 'restoreSession':
+        restoreSession(msg.entries);
+        break;
+      case 'sessionList':
+        sessions = msg.sessions ?? [];
+        activeSessionId = msg.activeId ?? '';
+        if (sessionPopoverOpen) renderSessionPopover();
         break;
       case 'contextAdded':
         attachedContexts.push({ name: msg.name, content: msg.content, lang: msg.lang });
         renderChips();
         break;
+      case 'contextTrimmed':
+        appendNotice(`Conversation is long — ${msg.count} older message${msg.count > 1 ? 's' : ''} trimmed from the model context.`);
+        break;
+      case 'fileList': {
+        // Show only if the input still has an active #query
+        if (!FILE_REF_RE.test(inputEl.value)) break;
+        const files = msg.files ?? [];
+        if (!files.length) { closeCmdPopover(); break; }
+        cmdMode = 'file';
+        openCmdPopover(files.map((f) => ({ name: f, description: '' })));
+        break;
+      }
       case 'contextError':
         vscode.postMessage({ type: 'showError' }); // fallback
         appendError(msg.message);
@@ -340,9 +578,96 @@
   // ── State helpers ─────────────────────────────────────
   function truncateModel(name) { return name; } // CSS handles ellipsis
 
-  function setOllamaStatus(running) {
-    ollamaBanner.style.display = running ? 'none' : 'flex';
-    if (running) { startOllamaBtn.textContent = '▶ Start'; startOllamaBtn.disabled = false; }
+  /** @type {Array<{label:string,url:string,protocol:string}>} */
+  let detectedServers = [];
+
+  const PROVIDER_CARDS = [
+    { id: 'ollama', name: 'Ollama', desc: 'Recommended — manages model downloads for you', badge: 'Recommended' },
+    { id: 'lmstudio', name: 'LM Studio', desc: 'OpenAI-compatible server on :1234' },
+    { id: 'jan', name: 'Jan', desc: 'OpenAI-compatible server on :1337' },
+    { id: 'llamacpp', name: 'llama.cpp', desc: 'llama-server on :8080' },
+  ];
+
+  /** Show the chat surface or the setup wizard based on backend state. */
+  function applyBackendState() {
+    const ready = serverState === 'ready';
+    setupView.style.display = ready ? 'none' : 'flex';
+    messagesWrapper.style.display = ready ? 'flex' : 'none';
+    inputArea.style.display = ready ? 'flex' : 'none';
+    pillBar.style.display = ready ? 'flex' : 'none';
+    // Stop-server button only makes sense for backends we can control
+    stopOllamaBtn.style.display = capabilities.canStartStopServer ? '' : 'none';
+    if (!ready) renderSetup();
+  }
+
+  function renderSetup() {
+    const h = [];
+    h.push(`<div class="setup-inner">`);
+    h.push(`<div class="setup-logo">✦</div>`);
+
+    if (serverState === 'not-installed') {
+      h.push(`<div class="setup-title">Set up your local AI</div>`);
+      h.push(`<div class="setup-sub">Gemma Agent runs entirely on your machine. Pick a local AI server:</div>`);
+      h.push(`<div class="provider-cards">`);
+      for (const c of PROVIDER_CARDS) {
+        h.push(
+          `<button class="provider-card" data-setup-action="selectProvider" data-value="${c.id}">` +
+          `<span class="pc-name">${c.name}${c.badge ? `<span class="pc-badge">${c.badge}</span>` : ''}</span>` +
+          `<span class="pc-desc">${escapeHtml(c.desc)}</span></button>`
+        );
+      }
+      h.push(`</div>`);
+      h.push(`<button class="setup-btn primary" data-setup-action="install">⬇ Install Ollama</button>`);
+      h.push(`<button class="setup-btn ghost" data-setup-action="detect">🔍 Detect running servers</button>`);
+      if (detectedServers.length) {
+        h.push(`<div class="setup-detected">Found: ${detectedServers.map((s) => `<button class="detected-server" data-setup-action="selectProvider" data-value="${providerIdForUrl(s)}">${escapeHtml(s.label)}</button>`).join(' ')}</div>`);
+      }
+      h.push(`<button class="setup-link" data-setup-action="openSettings">Use a custom URL…</button>`);
+    } else if (serverState === 'not-running') {
+      h.push(`<div class="setup-title">Server not running</div>`);
+      if (capabilities.canStartStopServer) {
+        h.push(`<div class="setup-sub">Ollama is installed but not running.</div>`);
+        h.push(`<button class="setup-btn primary" data-setup-action="start">▶ Start Ollama</button>`);
+      } else {
+        h.push(`<div class="setup-sub">Start your local AI server, then retry. Expecting it at the configured URL.</div>`);
+        h.push(`<button class="setup-btn primary" data-setup-action="retry">↻ Retry connection</button>`);
+      }
+      h.push(`<button class="setup-link" data-setup-action="openSettings">Change server settings…</button>`);
+    } else if (serverState === 'no-models') {
+      h.push(`<div class="setup-title">Almost ready</div>`);
+      if (capabilities.canPull) {
+        const job = pulls[recommendedModel];
+        h.push(`<div class="setup-sub">Download a model to get started:</div>`);
+        h.push(`<div class="model-card">`);
+        h.push(`<span class="mc-name">${recommendedModel}</span>`);
+        if (job) {
+          const pct = typeof job.percent === 'number' ? job.percent : 0;
+          h.push(`<div class="mc-progress"><div class="mc-bar" style="width:${pct}%"></div></div>`);
+          h.push(`<span class="mc-status">${escapeHtml(job.status)}${typeof job.percent === 'number' ? ` ${job.percent}%` : ''}</span>`);
+          h.push(`<button class="setup-btn ghost" data-setup-action="cancelPull" data-value="${recommendedModel}">Cancel</button>`);
+        } else {
+          h.push(`<button class="setup-btn primary" data-setup-action="pull" data-value="${recommendedModel}">⬇ Download ${recommendedModel}</button>`);
+        }
+        h.push(`</div>`);
+      } else {
+        h.push(`<div class="setup-sub">Your server is running but has no model loaded. Load one in your server's UI, then retry.</div>`);
+        h.push(`<button class="setup-btn primary" data-setup-action="retry">↻ Retry</button>`);
+      }
+    } else {
+      h.push(`<div class="setup-title">Connecting…</div>`);
+      h.push(`<div class="setup-sub">Checking your local AI server.</div>`);
+    }
+
+    h.push(`</div>`);
+    setupView.innerHTML = h.join('');
+  }
+
+  function providerIdForUrl(s) {
+    if (s.protocol === 'ollama') return 'ollama';
+    if (s.url.includes('1234')) return 'lmstudio';
+    if (s.url.includes('1337')) return 'jan';
+    if (s.url.includes('8080')) return 'llamacpp';
+    return 'ollama';
   }
 
   function setAgentMode(enabled) {
@@ -469,6 +794,13 @@
     isGenerating = false;
     setInputDisabled(false);
     if (scrollToBottomBtn) scrollToBottomBtn.classList.remove('visible');
+    // Run ended while a tool was awaiting approval (e.g. Stop pressed)
+    document.querySelectorAll('.tool-card.awaiting').forEach((card) => {
+      card.querySelector('.tool-approval')?.remove();
+      card.classList.remove('awaiting');
+      const badge = card.querySelector('.tool-status-badge');
+      if (badge) badge.textContent = 'canceled';
+    });
     if (assistantBubble) {
       if (!rawBuffer.trim()) {
         // Agent only did tool calls — remove empty bubble
@@ -481,6 +813,25 @@
     assistantBubble = null;
     rawBuffer = '';
     inputEl.focus();
+  }
+
+  function appendNotice(text, action) {
+    hideEmpty();
+    const div = document.createElement('div');
+    div.className = 'chat-notice';
+    div.textContent = text;
+    if (action && action.kind === 'buildIndex') {
+      const btn = document.createElement('button');
+      btn.className = 'notice-action';
+      btn.textContent = 'Build index';
+      btn.addEventListener('click', () => vscode.postMessage({ type: 'buildIndex' }));
+      div.appendChild(btn);
+    }
+    // While streaming, place the notice above the live assistant bubble
+    const wrap = assistantBubble?.closest('.message');
+    if (wrap) messagesEl.insertBefore(div, wrap);
+    else messagesEl.appendChild(div);
+    scrollToBottomIfSticky();
   }
 
   function appendError(text) {
@@ -519,8 +870,10 @@
       const lastUser = allMessages[allMessages.length - 1];
       const lastText = lastUser?.querySelector('.bubble')?.textContent ?? '';
       if (!lastText) return;
-      // Remove last assistant message
+      // Remove the assistant message and the user bubble —
+      // the extension re-posts the user turn, avoiding duplicates
       msgWrap.remove();
+      lastUser.remove();
       vscode.postMessage({ type: 'regenerate', text: lastText });
     });
     msgWrap.appendChild(btn);
@@ -528,38 +881,85 @@
 
   // ── Tool cards ────────────────────────────────────────
   const TOOL_META = {
-    create_file:  { emoji: '📄', label: 'Create file' },
-    edit_file:    { emoji: '✏️', label: 'Edit file' },
-    read_file:    { emoji: '📖', label: 'Read file' },
-    run_command:  { emoji: '⚡', label: 'Run command' },
-    list_files:   { emoji: '📁', label: 'List directory' },
-    search_files: { emoji: '🔍', label: 'Search files' },
+    create_file:     { emoji: '📄', label: 'Create file' },
+    edit_file:       { emoji: '✏️', label: 'Edit file' },
+    read_file:       { emoji: '📖', label: 'Read file' },
+    run_command:     { emoji: '⚡', label: 'Run command' },
+    list_files:      { emoji: '📁', label: 'List directory' },
+    search_files:    { emoji: '🔍', label: 'Search files' },
+    get_diagnostics: { emoji: '🩺', label: 'Get diagnostics' },
   };
 
-  function appendToolCard(tool) {
+  /** @type {Map<string, HTMLDivElement>} */
+  const toolCards = new Map();
+
+  function appendToolCard(tool, callId, requiresApproval) {
     const meta = TOOL_META[tool.tool] ?? { emoji: '⚙', label: tool.tool };
     const arg = tool.path ?? tool.command ?? tool.query ?? '';
 
     const card = document.createElement('div');
-    card.className = 'tool-card running';
+    card.className = 'tool-card ' + (requiresApproval ? 'awaiting' : 'running');
+    if (callId) {
+      card.dataset.callId = callId;
+      toolCards.set(callId, card);
+    }
     card.innerHTML = `
       <div class="tool-card-left">
         <span class="tool-emoji">${meta.emoji}</span>
         <span class="tool-name">${meta.label}</span>
       </div>
       <span class="tool-arg" title="${escapeHtml(arg)}">${escapeHtml(arg)}</span>
-      <span class="tool-status-badge">running…</span>`;
+      <span class="tool-status-badge">${requiresApproval ? 'needs approval' : 'running…'}</span>`;
+
+    if (requiresApproval) {
+      const actions = document.createElement('div');
+      actions.className = 'tool-approval';
+      const canDiff = tool.tool === 'create_file' || tool.tool === 'edit_file';
+      actions.innerHTML =
+        (canDiff ? `<button class="approval-btn diff" data-act="diff">⎘ View diff</button>` : '') +
+        `<button class="approval-btn approve" data-decision="approve">✓ Approve</button>` +
+        `<button class="approval-btn deny" data-decision="deny">✗ Deny</button>` +
+        `<button class="approval-btn always" data-decision="always">Always allow</button>`;
+      actions.querySelectorAll('button').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const b = /** @type {HTMLButtonElement} */ (btn);
+          if (b.dataset.act === 'diff') {
+            vscode.postMessage({ type: 'previewToolDiff', callId });
+          } else {
+            vscode.postMessage({ type: 'toolApproval', callId, decision: b.dataset.decision });
+          }
+        });
+      });
+      card.appendChild(actions);
+    }
 
     messagesEl.appendChild(card);
     lastToolCard = card;
     scrollToBottomIfSticky();
   }
 
-  function finalizeToolCard(result) {
-    if (!lastToolCard) return;
-    lastToolCard.classList.remove('running');
-    lastToolCard.classList.add(result.ok ? 'success' : 'failure');
-    const badge = lastToolCard.querySelector('.tool-status-badge');
+  function resolveToolApproval(callId, approved) {
+    const card = toolCards.get(callId) || lastToolCard;
+    if (!card) return;
+    card.querySelector('.tool-approval')?.remove();
+    card.classList.remove('awaiting');
+    const badge = card.querySelector('.tool-status-badge');
+    if (approved) {
+      card.classList.add('running');
+      if (badge) badge.textContent = 'running…';
+    } else if (badge) {
+      badge.textContent = 'denied'; // the DENIED tool_result finalizes the card
+    }
+  }
+
+  function finalizeToolCard(result, callId) {
+    const card = (callId && toolCards.get(callId)) || lastToolCard;
+    if (!card) return;
+    if (callId) toolCards.delete(callId);
+    card.querySelector('.tool-approval')?.remove();
+    card.classList.remove('running', 'awaiting');
+    card.classList.add(result.ok ? 'success' : 'failure');
+    const badge = card.querySelector('.tool-status-badge');
     if (badge) badge.textContent = result.ok ? '✓ Done' : '✗ Error';
 
     if (result.output && result.output.length > 15) {
@@ -570,10 +970,54 @@
       pre.textContent = result.output;
       details.innerHTML = '<summary>Show output</summary>';
       details.appendChild(pre);
-      lastToolCard.appendChild(details);
+      card.appendChild(details);
     }
-    lastToolCard = null;
+    if (card === lastToolCard) lastToolCard = null;
     scrollToBottomIfSticky();
+  }
+
+  // ── Review bar (changed files: Review / Keep all / Undo all) ──────────
+  /** @type {HTMLDivElement|null} */
+  let checkpointBar = null;
+  let checkpointBarId = '';
+
+  function showCheckpointBar(checkpointId, files) {
+    // Re-entrant: the extension re-sends this to update the file count during review
+    if (checkpointBar && checkpointBarId === checkpointId) {
+      if (!files || files.length === 0) { markCheckpointRestored([]); return; }
+      renderCheckpointBar(checkpointBar, checkpointId, files);
+      return;
+    }
+    // A new run supersedes any previous bar
+    if (checkpointBar) checkpointBar.remove();
+    const bar = document.createElement('div');
+    bar.className = 'checkpoint-bar';
+    renderCheckpointBar(bar, checkpointId, files);
+    messagesEl.appendChild(bar);
+    checkpointBar = bar;
+    checkpointBarId = checkpointId;
+    scrollToBottomIfSticky();
+  }
+
+  function renderCheckpointBar(bar, checkpointId, files) {
+    const n = files.length;
+    bar.innerHTML =
+      `<span class="cb-label">${n} file${n > 1 ? 's' : ''} changed</span>` +
+      `<button class="cb-btn" data-cb="review">Review</button>` +
+      `<button class="cb-btn" data-cb="keep">Keep all</button>` +
+      `<button class="cb-btn danger" data-cb="undo">Undo all</button>`;
+    bar.querySelector('[data-cb="review"]')?.addEventListener('click', () => vscode.postMessage({ type: 'reviewChanges' }));
+    bar.querySelector('[data-cb="keep"]')?.addEventListener('click', () => { vscode.postMessage({ type: 'keepCheckpoint' }); markCheckpointRestored([], 'Kept'); });
+    bar.querySelector('[data-cb="undo"]')?.addEventListener('click', () => {
+      vscode.postMessage({ type: 'undoCheckpoint', checkpointId });
+    });
+  }
+
+  function markCheckpointRestored(failed, label) {
+    if (!checkpointBar) return;
+    checkpointBar.innerHTML = `<span class="cb-label">${failed && failed.length ? '⚠ Partially restored' : (label || '✓ Done')}</span>`;
+    checkpointBar = null;
+    checkpointBarId = '';
   }
 
   // ── Syntax highlighter ────────────────────────────────
@@ -758,14 +1202,22 @@
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  // ── History restore ───────────────────────────────────
-  function restoreHistory(messages) {
-    if (!messages || messages.length === 0) return;
+  // ── Session restore ───────────────────────────────────
+  function restoreSession(entries) {
+    // Clear the message list and any transient run state
+    isGenerating = false;
+    setInputDisabled(false);
+    assistantBubble = null;
+    rawBuffer = '';
+    messagesEl.innerHTML = '';
+    messagesEl.appendChild(emptyState);
+    emptyState.style.display = 'flex';
+    if (!entries || entries.length === 0) return;
     hideEmpty();
-    messages.forEach((msg) => {
-      if (msg.role === 'user') {
-        appendUserMessage(msg.content);
-      } else if (msg.role === 'assistant' && msg.content) {
+    entries.forEach((e) => {
+      if (e.kind === 'user') {
+        appendUserMessage(e.content);
+      } else if (e.kind === 'assistant' && e.content) {
         const wrap = document.createElement('div');
         wrap.className = 'message assistant';
         const header = document.createElement('div');
@@ -773,14 +1225,122 @@
         header.innerHTML = '<div class="msg-avatar">G</div><span class="msg-name">Gemma</span>';
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
-        bubble.innerHTML = renderMarkdown(msg.content);
+        bubble.innerHTML = renderMarkdown(e.content);
         wrap.appendChild(header);
         wrap.appendChild(bubble);
         messagesEl.appendChild(wrap);
         addCodeBlockButtons(bubble);
+      } else if (e.kind === 'tool') {
+        renderFinalizedToolCard(e);
+      } else if (e.kind === 'notice') {
+        appendNotice(e.text);
       }
     });
     scrollToBottom();
+  }
+
+  /** Render a persisted tool entry as a finalized card (no approval buttons). */
+  function renderFinalizedToolCard(e) {
+    const meta = TOOL_META[e.tool] ?? { emoji: '⚙', label: e.tool };
+    const card = document.createElement('div');
+    card.className = 'tool-card ' + (e.ok ? 'success' : 'failure');
+    card.innerHTML = `
+      <div class="tool-card-left">
+        <span class="tool-emoji">${meta.emoji}</span>
+        <span class="tool-name">${meta.label}</span>
+      </div>
+      <span class="tool-arg" title="${escapeHtml(e.arg)}">${escapeHtml(e.arg)}</span>
+      <span class="tool-status-badge">${e.ok ? '✓ Done' : '✗ Error'}</span>`;
+    if (e.output && e.output.length > 15) {
+      const details = document.createElement('details');
+      details.className = 'tool-output-toggle';
+      const pre = document.createElement('pre');
+      pre.className = 'tool-output-pre';
+      pre.textContent = e.output;
+      details.innerHTML = '<summary>Show output</summary>';
+      details.appendChild(pre);
+      card.appendChild(details);
+    }
+    messagesEl.appendChild(card);
+  }
+
+  // ── Session popover ───────────────────────────────────
+  function toggleSessionPopover() {
+    sessionPopoverOpen = !sessionPopoverOpen;
+    if (sessionPopoverOpen) {
+      renderSessionPopover();
+      sessionPopover.classList.add('open');
+    } else {
+      sessionPopover.classList.remove('open');
+    }
+  }
+
+  function closeSessionPopover() {
+    sessionPopoverOpen = false;
+    sessionPopover.classList.remove('open');
+  }
+
+  function renderSessionPopover() {
+    sessionPopover.innerHTML = '';
+    const header = document.createElement('div');
+    header.className = 'popover-section-header';
+    header.textContent = 'Chat sessions';
+    sessionPopover.appendChild(header);
+
+    sessions.forEach((s) => {
+      const row = document.createElement('div');
+      row.className = 'session-row' + (s.id === activeSessionId ? ' active' : '');
+      row.innerHTML =
+        `<span class="session-title" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</span>` +
+        `<button class="session-act rename" title="Rename">✎</button>` +
+        `<button class="session-act delete" title="Delete">🗑</button>`;
+      row.querySelector('.session-title')?.addEventListener('click', () => {
+        if (s.id !== activeSessionId) vscode.postMessage({ type: 'switchSession', id: s.id });
+        closeSessionPopover();
+      });
+      row.querySelector('.rename')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        startRename(row, s);
+      });
+      let confirmDelete = false;
+      const delBtn = row.querySelector('.delete');
+      delBtn?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!confirmDelete) {
+          confirmDelete = true;
+          delBtn.textContent = '✓?';
+          setTimeout(() => { confirmDelete = false; delBtn.textContent = '🗑'; }, 2500);
+          return;
+        }
+        vscode.postMessage({ type: 'deleteSession', id: s.id });
+      });
+      sessionPopover.appendChild(row);
+    });
+
+    const positionRect = sessionsBtn.getBoundingClientRect();
+    sessionPopover.style.top = (positionRect.bottom + 4) + 'px';
+    sessionPopover.style.right = '8px';
+  }
+
+  function startRename(row, s) {
+    const titleEl = row.querySelector('.session-title');
+    if (!titleEl) return;
+    const input = document.createElement('input');
+    input.className = 'session-rename-input';
+    input.value = s.title;
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+    const commit = () => {
+      const v = input.value.trim();
+      if (v && v !== s.title) vscode.postMessage({ type: 'renameSession', id: s.id, title: v });
+      else renderSessionPopover();
+    };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); renderSessionPopover(); }
+    });
+    input.addEventListener('blur', commit);
   }
 
   function addCodeBlockButtons(bubble) {

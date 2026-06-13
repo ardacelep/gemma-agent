@@ -5,27 +5,109 @@
   "version": "0.1.0",
   "publisher": "ardacelep",
   "license": "MIT",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/ardacelep/gemma-agent"
   },
-  "keywords": ["ai", "llm", "ollama", "gemma", "copilot", "chat", "code completion", "local", "offline"],
+  "keywords": [
+    "ai",
+    "llm",
+    "ollama",
+    "gemma",
+    "copilot",
+    "chat",
+    "code completion",
+    "local",
+    "offline"
+  ],
   "galleryBanner": {
     "color": "#1e1e2e",
     "theme": "dark"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.93.0"
   },
-  "categories": ["AI", "Machine Learning", "Other"],
-  "activationEvents": ["onStartupFinished"],
-  "main": "./out/extension.js",
+  "categories": [
+    "AI",
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
   "contributes": {
+    "walkthroughs": [
+      {
+        "id": "gemmaAgent.gettingStarted",
+        "title": "Get started with Gemma Agent",
+        "description": "Run an AI coding assistant entirely on your machine — no cloud, no API keys.",
+        "steps": [
+          {
+            "id": "server",
+            "title": "Install a local AI server",
+            "description": "Gemma Agent talks to a local server (Ollama, LM Studio, Jan, llama.cpp…).\n[Install Ollama](command:gemmaAgent.installServer)",
+            "media": { "markdown": "media/walkthrough/server.md" },
+            "completionEvents": ["onCommand:gemmaAgent.startOllama"]
+          },
+          {
+            "id": "model",
+            "title": "Download a model",
+            "description": "Pull a Gemma model so the assistant has a brain.\n[Pull a model](command:gemmaAgent.pullModel)",
+            "media": { "markdown": "media/walkthrough/model.md" },
+            "completionEvents": ["onCommand:gemmaAgent.pullModel"]
+          },
+          {
+            "id": "chat",
+            "title": "Open the chat",
+            "description": "Open the Gemma panel from the activity bar and ask your first question.\n[Open Gemma](command:gemmaAgent.openChat)",
+            "media": { "markdown": "media/walkthrough/chat.md" },
+            "completionEvents": ["onCommand:gemmaAgent.openChat"]
+          },
+          {
+            "id": "inlineEdit",
+            "title": "Edit code inline",
+            "description": "Select code and press the inline-edit shortcut to rewrite it in place.\n[Try inline edit](command:gemmaAgent.inlineEdit)",
+            "media": { "markdown": "media/walkthrough/inline.md" },
+            "completionEvents": ["onCommand:gemmaAgent.inlineEdit"]
+          },
+          {
+            "id": "agent",
+            "title": "Use Agent mode",
+            "description": "Switch to ⚡ Agent mode in the chat to let Gemma create files and run commands — with your approval.",
+            "media": { "markdown": "media/walkthrough/agent.md" }
+          }
+        ]
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gemmaAgent",
+          "title": "Gemma Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "gemmaAgent": [
+        {
+          "id": "gemmaAgent.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "gemmaAgent.openChat",
         "title": "Gemma: Open Chat",
         "icon": "media/icon.svg"
+      },
+      {
+        "command": "gemmaAgent.installServer",
+        "title": "Gemma: Install Local AI Server"
       },
       {
         "command": "gemmaAgent.explainCode",
@@ -53,15 +135,24 @@
       },
       {
         "command": "gemmaAgent.startOllama",
-        "title": "Gemma: Ollama'yı Başlat"
+        "title": "Gemma: Start Ollama"
       },
       {
         "command": "gemmaAgent.pullModel",
-        "title": "Gemma: Model İndir (ollama pull)"
+        "title": "Gemma: Pull Model (ollama pull)"
       },
       {
         "command": "gemmaAgent.inlineEdit",
-        "title": "Gemma: Inline Düzenle"
+        "title": "Gemma: Inline Edit"
+      },
+      {
+        "command": "gemmaAgent.generateCommitMessage",
+        "title": "Gemma: Generate Commit Message",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "gemmaAgent.buildIndex",
+        "title": "Gemma: Build Workspace Index (@workspace)"
       }
     ],
     "menus": {
@@ -70,6 +161,13 @@
           "command": "gemmaAgent.openChat",
           "group": "navigation",
           "icon": "media/icon.svg"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "gemmaAgent.generateCommitMessage",
+          "group": "navigation",
+          "when": "scmProvider == git"
         }
       ],
       "editor/context": [
@@ -103,14 +201,48 @@
     "configuration": {
       "title": "Gemma Agent",
       "properties": {
+        "gemmaAgent.apiProtocol": {
+          "type": "string",
+          "default": "ollama",
+          "enum": [
+            "ollama",
+            "openai-compatible"
+          ],
+          "enumDescriptions": [
+            "Ollama native API (model download, warm-up, lifecycle management)",
+            "OpenAI-compatible API (LM Studio, Jan, llama.cpp llama-server, vLLM, LocalAI)"
+          ],
+          "description": "Which local AI server protocol to use"
+        },
         "gemmaAgent.ollamaUrl": {
           "type": "string",
           "default": "http://localhost:11434",
-          "description": "Ollama server URL"
+          "description": "Server URL — Ollama or any OpenAI-compatible local server (LM Studio :1234, Jan :1337, llama-server :8080)"
+        },
+        "gemmaAgent.completionModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model to use for inline completion (empty = use the main model). A small/fast model here keeps ghost-text snappy."
+        },
+        "gemmaAgent.customInstructions": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "description": "Custom instructions appended to every chat, agent and inline-edit system prompt. You can also create a .gemma/rules.md file in your workspace."
+        },
+        "gemmaAgent.embeddingModel": {
+          "type": "string",
+          "default": "nomic-embed-text",
+          "description": "Embedding model used for @workspace semantic search (e.g. nomic-embed-text). Pull it once with the model picker."
+        },
+        "gemmaAgent.workspaceIndexEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable @workspace semantic search. Building the index embeds your files locally (uses CPU)."
         },
         "gemmaAgent.model": {
           "type": "string",
-          "default": "gemma3:4b",
+          "default": "gemma4:e4b",
           "enum": [
             "gemma4:e4b",
             "gemma4:e2b",
@@ -141,6 +273,13 @@
           "default": 4096,
           "description": "Max tokens for chat responses"
         },
+        "gemmaAgent.numCtx": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 2048,
+          "maximum": 131072,
+          "description": "Context window size (num_ctx) sent to Ollama. Larger values use more RAM."
+        },
         "gemmaAgent.codeActionsEnabled": {
           "type": "boolean",
           "default": true,
@@ -149,7 +288,11 @@
         "gemmaAgent.ollamaOnExit": {
           "type": "string",
           "default": "keep",
-          "enum": ["ask", "keep", "stop"],
+          "enum": [
+            "ask",
+            "keep",
+            "stop"
+          ],
           "enumDescriptions": [
             "Ask when VS Code closes (only if we started Ollama)",
             "Keep Ollama running in the background",
@@ -164,12 +307,52 @@
           "maximum": 30,
           "description": "Maximum number of tool-call iterations the agent will perform before stopping"
         },
+        "gemmaAgent.agentAutoVerify": {
+          "type": "boolean",
+          "default": true,
+          "description": "After the agent edits files, automatically run diagnostics and let it fix any errors before finishing"
+        },
+        "gemmaAgent.agentRequireApproval": {
+          "type": "string",
+          "default": "commands",
+          "enum": [
+            "commands",
+            "commandsAndWrites",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Ask before the agent runs shell commands",
+            "Ask before shell commands AND file create/edit operations",
+            "Never ask — the agent runs all tools automatically"
+          ],
+          "description": "Which agent tools require your approval before they run"
+        },
         "gemmaAgent.completionMaxTokens": {
           "type": "number",
           "default": 150,
           "minimum": 32,
           "maximum": 512,
           "description": "Maximum tokens generated for inline code completions"
+        },
+        "gemmaAgent.completionLanguages": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "default": {
+            "*": true,
+            "markdown": false,
+            "plaintext": false,
+            "scminput": false
+          },
+          "description": "Enable/disable inline completion per language id. \"*\" is the default for unlisted languages."
+        },
+        "gemmaAgent.completionAlternatives": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Number of completion suggestions to generate (cycle with Alt+] / Alt+[). Values above 1 multiply completion latency with a local model."
         }
       }
     },
@@ -181,27 +364,48 @@
       },
       {
         "command": "gemmaAgent.explainCode",
-        "key": "ctrl+shift+e",
-        "mac": "cmd+shift+e",
+        "key": "ctrl+alt+e",
+        "mac": "cmd+alt+e",
         "when": "editorHasSelection"
       },
       {
         "command": "gemmaAgent.inlineEdit",
         "key": "ctrl+shift+i",
         "mac": "cmd+shift+i",
-        "when": "editorHasSelection"
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "gemmaAgent.inlineEditAccept",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "gemmaAgent.inlineEditActive && editorTextFocus"
+      },
+      {
+        "command": "gemmaAgent.inlineEditReject",
+        "key": "escape",
+        "when": "gemmaAgent.inlineEditActive && editorTextFocus"
+      },
+      {
+        "command": "editor.action.inlineSuggest.acceptNextWord",
+        "key": "ctrl+right",
+        "mac": "cmd+right",
+        "when": "inlineSuggestionVisible && textInputFocus && !editorReadonly"
       }
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run bundle",
+    "bundle": "node esbuild.js",
+    "bundle:watch": "node esbuild.js --watch",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "test": "npm run compile && node --test \"tests/*.test.mjs\""
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.120.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.3.0"
   }
 }

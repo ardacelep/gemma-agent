@@ -1,27 +1,26 @@
 import * as vscode from 'vscode';
-import { ollamaGenerate } from '../ollama/client';
 import { GemmaChatProvider } from './chatProvider';
 
 type ActionKind = 'explain' | 'refactor' | 'fix' | 'tests';
 
 const ACTION_PROMPTS: Record<ActionKind, { title: string; prompt: (lang: string) => string }> = {
   explain: {
-    title: 'Gemma: Kodu Açıkla',
-    prompt: (lang) => `Bu ${lang} kodunu Türkçe olarak adım adım açıkla:`,
+    title: 'Gemma: Explain Code',
+    prompt: (lang) => `Explain this ${lang} code step by step:`,
   },
   refactor: {
-    title: 'Gemma: Kodu Refactor Et',
+    title: 'Gemma: Refactor Code',
     prompt: (lang) =>
-      `Bu ${lang} kodunu daha okunabilir, temiz ve verimli hale getir. Sadece düzenlenmiş kodu ver, açıklama ekleme:`,
+      `Refactor this ${lang} code to be more readable, clean and efficient. Return only the refactored code, no extra explanation:`,
   },
   fix: {
-    title: 'Gemma: Hataları Düzelt',
+    title: 'Gemma: Fix Issues',
     prompt: (lang) =>
-      `Bu ${lang} kodundaki hataları ve sorunları tespit edip düzelt. Düzeltilmiş kodu ver ve kısa bir özet ekle:`,
+      `Find and fix the bugs and issues in this ${lang} code. Return the fixed code with a short summary:`,
   },
   tests: {
-    title: 'Gemma: Test Yaz',
-    prompt: (lang) => `Bu ${lang} kodu için kapsamlı unit testler yaz:`,
+    title: 'Gemma: Generate Tests',
+    prompt: (lang) => `Write comprehensive unit tests for this ${lang} code:`,
   },
 };
 
@@ -30,23 +29,42 @@ export class GemmaCodeActionProvider implements vscode.CodeActionProvider {
 
   provideCodeActions(
     document: vscode.TextDocument,
-    range: vscode.Range | vscode.Selection
+    range: vscode.Range | vscode.Selection,
+    context: vscode.CodeActionContext
   ): vscode.CodeAction[] {
-    if (range.isEmpty) return [];
     const cfg = vscode.workspace.getConfiguration('gemmaAgent');
     if (!cfg.get<boolean>('codeActionsEnabled', true)) return [];
 
-    return (Object.keys(ACTION_PROMPTS) as ActionKind[]).map((kind) => {
-      const action = new vscode.CodeAction(
-        ACTION_PROMPTS[kind].title,
-        kind === 'fix' ? vscode.CodeActionKind.QuickFix : vscode.CodeActionKind.Refactor
-      );
-      action.command = {
-        command: `gemmaAgent.${kind}Code`,
-        title: ACTION_PROMPTS[kind].title,
+    const actions: vscode.CodeAction[] = [];
+
+    // "✨ Fix with Gemma" — preferred quick-fix when there's a diagnostic here
+    // (works without a selection, unlike the explain/refactor actions below)
+    for (const d of context.diagnostics) {
+      const fix = new vscode.CodeAction('✨ Fix with Gemma', vscode.CodeActionKind.QuickFix);
+      fix.diagnostics = [d];
+      fix.isPreferred = true;
+      const code = typeof d.code === 'object' && d.code !== null ? String(d.code.value) : (d.code !== undefined ? String(d.code) : '');
+      fix.command = {
+        command: 'gemmaAgent.fixDiagnostic',
+        title: '✨ Fix with Gemma',
+        arguments: [document.uri, d.range, d.message, code],
       };
-      return action;
-    });
+      actions.push(fix);
+    }
+
+    // Explain / refactor / fix / tests — require a selection
+    if (!range.isEmpty) {
+      for (const kind of Object.keys(ACTION_PROMPTS) as ActionKind[]) {
+        const action = new vscode.CodeAction(
+          ACTION_PROMPTS[kind].title,
+          kind === 'fix' ? vscode.CodeActionKind.QuickFix : vscode.CodeActionKind.Refactor
+        );
+        action.command = { command: `gemmaAgent.${kind}Code`, title: ACTION_PROMPTS[kind].title };
+        actions.push(action);
+      }
+    }
+
+    return actions;
   }
 }
 
@@ -66,53 +84,13 @@ export function registerCodeActionCommands(
       vscode.commands.registerCommand(id, async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.selection.isEmpty) {
-          vscode.window.showWarningMessage('Lütfen önce bir kod seçin.');
+          vscode.window.showWarningMessage('Select some code first.');
           return;
         }
         const selectedCode = editor.document.getText(editor.selection);
         const lang = editor.document.languageId;
-        const promptText = ACTION_PROMPTS[kind].prompt(lang);
-
-        if (kind === 'explain') {
-          // explain goes to chat panel for better readability
-          await chatProvider.sendToChat(promptText, selectedCode);
-        } else {
-          await chatProvider.sendToChat(promptText, selectedCode);
-        }
+        await chatProvider.sendToChat(ACTION_PROMPTS[kind].prompt(lang), selectedCode);
       })
     );
   }
-}
-
-/** Inline quick-fix that replaces selection with model output (refactor / fix). */
-export async function applyInlineEdit(
-  editor: vscode.TextEditor,
-  kind: 'refactor' | 'fix'
-): Promise<void> {
-  const selectedCode = editor.document.getText(editor.selection);
-  const lang = editor.document.languageId;
-  const prompt = `${ACTION_PROMPTS[kind].prompt(lang)}\n\`\`\`${lang}\n${selectedCode}\n\`\`\`\n\nSadece kodu döndür, ek açıklama ekleme.`;
-
-  await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Gemma işliyor...', cancellable: true },
-    async (_progress, token) => {
-      const abort = new AbortController();
-      token.onCancellationRequested(() => abort.abort());
-      try {
-        const result = await ollamaGenerate({ prompt, signal: abort.signal });
-        const cleaned = extractCodeBlock(result, lang);
-        await editor.edit((eb) => eb.replace(editor.selection, cleaned));
-      } catch (err: unknown) {
-        if ((err as Error).name !== 'AbortError') {
-          vscode.window.showErrorMessage(`Gemma hatası: ${(err as Error).message}`);
-        }
-      }
-    }
-  );
-}
-
-function extractCodeBlock(text: string, lang: string): string {
-  const fenced = new RegExp(`\`\`\`(?:${lang})?\\n?([\\s\\S]*?)\`\`\``, 'i');
-  const match = text.match(fenced);
-  return match ? match[1].trim() : text.trim();
 }
