@@ -1165,6 +1165,15 @@
   }
 
   // ── Markdown renderer ─────────────────────────────────
+  function codeBlockHtml(lang, code, streaming) {
+    const safeLang = (lang || 'code').toLowerCase();
+    return `<div class="code-block${streaming ? ' streaming' : ''}" data-code="${encodeURIComponent(code)}">` +
+      `<div class="code-header"><span class="code-lang">${escapeHtml(safeLang)}</span>` +
+      `<button class="copy-btn">Copy</button></div>` +
+      `<pre><code>${highlight(code, safeLang)}</code></pre>` +
+    `</div>`;
+  }
+
   function renderMarkdown(text) {
     const parts = [];
     let last = 0;
@@ -1172,19 +1181,24 @@
     let m;
     while ((m = codeRe.exec(text)) !== null) {
       if (m.index > last) parts.push(renderInline(text.slice(last, m.index)));
-      const lang = (m[1] || 'code').toLowerCase();
-      const code = m[2].trim();
-      const highlighted = highlight(code, lang);
-      parts.push(
-        `<div class="code-block" data-code="${encodeURIComponent(code)}">` +
-          `<div class="code-header"><span class="code-lang">${escapeHtml(lang)}</span>` +
-          `<button class="copy-btn">Copy</button></div>` +
-          `<pre><code>${highlighted}</code></pre>` +
-        `</div>`
-      );
+      parts.push(codeBlockHtml(m[1], m[2].trim(), false));
       last = m.index + m[0].length;
     }
-    if (last < text.length) parts.push(renderInline(text.slice(last)));
+    // Remaining tail: an unterminated ``` fence is rendered as a live code
+    // block so it's highlighted while streaming, not shown as raw text.
+    const tail = text.slice(last);
+    const openIdx = tail.indexOf('```');
+    if (openIdx !== -1) {
+      if (openIdx > 0) parts.push(renderInline(tail.slice(0, openIdx)));
+      const rest = tail.slice(openIdx + 3);
+      const nl = rest.indexOf('\n');
+      let lang, code;
+      if (nl === -1) { lang = rest.trim(); code = ''; }       // language line still arriving
+      else { lang = rest.slice(0, nl).trim(); code = rest.slice(nl + 1); }
+      parts.push(codeBlockHtml(lang, code, true));
+    } else if (tail.length) {
+      parts.push(renderInline(tail));
+    }
     return parts.join('');
   }
 

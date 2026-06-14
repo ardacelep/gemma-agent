@@ -219,10 +219,31 @@
           "default": "http://localhost:11434",
           "description": "Server URL — Ollama or any OpenAI-compatible local server (LM Studio :1234, Jan :1337, llama-server :8080)"
         },
+        "gemmaAgent.agentModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model to use for ⚡ Agent mode (empty = main model). A strong tool-calling/coding model (e.g. qwen3-coder, devstral) makes the agent far more reliable."
+        },
         "gemmaAgent.completionModel": {
           "type": "string",
           "default": "",
-          "description": "Model to use for inline completion (empty = use the main model). A small/fast model here keeps ghost-text snappy."
+          "description": "Model to use for inline completion (empty = main model). A small code model with FIM (e.g. qwen2.5-coder:1.5b-base) gives the best ghost text."
+        },
+        "gemmaAgent.completionFim": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "off"],
+          "description": "Use real fill-in-the-middle prompting when the completion model supports it (auto-detected). 'off' forces the generic prompt."
+        },
+        "gemmaAgent.completionContextTabs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include brief context from other open editor tabs in completion prompts."
+        },
+        "gemmaAgent.autoWorkspaceContext": {
+          "type": "boolean",
+          "default": false,
+          "description": "When the workspace index is built, automatically attach the most relevant code chunks to chat questions (without typing @workspace)."
         },
         "gemmaAgent.customInstructions": {
           "type": "string",
@@ -280,6 +301,11 @@
           "maximum": 131072,
           "description": "Context window size (num_ctx) sent to Ollama. Larger values use more RAM."
         },
+        "gemmaAgent.keepAlive": {
+          "type": "string",
+          "default": "30m",
+          "description": "How long Ollama keeps the model loaded in RAM between requests (e.g. 5m, 30m, -1 for always). Longer avoids cold-reload latency after idle."
+        },
         "gemmaAgent.codeActionsEnabled": {
           "type": "boolean",
           "default": true,
@@ -311,6 +337,11 @@
           "type": "boolean",
           "default": true,
           "description": "After the agent edits files, automatically run diagnostics and let it fix any errors before finishing"
+        },
+        "gemmaAgent.agentStructuredOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Constrain agent tool calls to a JSON schema (when the server supports it) for far more reliable tool use. Disable to use the legacy text-parsed format."
         },
         "gemmaAgent.agentRequireApproval": {
           "type": "string",

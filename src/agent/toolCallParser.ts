@@ -20,6 +20,27 @@ export const TOOL_CALL_RE = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/;
 // Fallback: some models emit the tool call as a fenced JSON block instead
 export const FENCED_TOOL_RE = /```(?:json)?\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*```/;
 
+/**
+ * JSON schema for one agent step: either a tool call or `{tool:"final", message}`.
+ * Used to constrain generation (Ollama `format` / OpenAI `json_schema`) so the
+ * model can't emit malformed/partial tool calls.
+ */
+export const TOOL_CALL_SCHEMA = {
+  type: 'object',
+  properties: {
+    tool: { type: 'string', enum: [...TOOL_NAMES, 'final'] },
+    path: { type: 'string' },
+    content: { type: 'string' },
+    search: { type: 'string' },
+    replace: { type: 'string' },
+    command: { type: 'string' },
+    query: { type: 'string' },
+    regex: { type: 'boolean' },
+    message: { type: 'string', description: 'Final answer text when tool is "final".' },
+  },
+  required: ['tool'],
+} as const;
+
 /** Strip markdown link syntax from file paths: [name](url) → name */
 export function stripMarkdownLink(s: string): string {
   return s.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim();

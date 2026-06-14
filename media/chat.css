@@ -743,6 +743,17 @@ body {
   white-space: pre;
 }
 
+/* Live code block while streaming: subtle accent + blinking caret */
+.code-block.streaming {
+  border-color: var(--vscode-progressBar-background, #007acc);
+}
+.code-block.streaming pre code::after {
+  content: '▌';
+  color: var(--vscode-progressBar-background, #007acc);
+  animation: caret-blink 1s steps(1) infinite;
+}
+@keyframes caret-blink { 50% { opacity: 0; } }
+
 /* ── Syntax highlighting ──────────────────────────────── */
 /* Dark theme (VS Code default) */
 body.vscode-dark .hl-kw { color: #569cd6; }           /* keyword   — blue */
