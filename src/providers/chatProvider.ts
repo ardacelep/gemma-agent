@@ -579,6 +579,21 @@ export class GemmaChatProvider implements vscode.WebviewViewProvider {
       } else {
         this.post({ type: 'notice', text: 'Workspace index not built — run "Gemma: Build Workspace Index".', action: { kind: 'buildIndex' } });
       }
+    } else if (
+      !this.agentMode &&
+      vscode.workspace.getConfiguration('gemmaAgent').get<boolean>('autoWorkspaceContext', false) &&
+      this.workspaceIndex?.status === 'ready' &&
+      text.trim().length > 12
+    ) {
+      // Auto-retrieval: silently attach the most relevant chunks (no @workspace needed)
+      try {
+        const hits = await this.workspaceIndex.query(text, 3);
+        if (hits.length > 0) {
+          workspaceBlock = 'Relevant workspace code:\n' + hits
+            .map((h) => `${h.path}:${h.startLine}-${h.endLine}\n${h.snippet}`)
+            .join('\n\n');
+        }
+      } catch { /* retrieval is best-effort */ }
     }
 
     let content = text;

@@ -1,9 +1,36 @@
 import * as vscode from 'vscode';
 import { ollamaGenerate, resolveRoleModel } from '../llm/client';
 import { fimTemplateFor } from '../llm/modelCatalog';
-import { clean, isCommentLine } from './completionClean';
+import { COMMENT_STARTERS, clean, isCommentLine } from './completionClean';
 import { StatusBarManager } from '../statusBar';
 import { BackendService } from '../llm/backendService';
+
+/** Line-comment token for a language, defaulting to //. */
+function lineComment(lang: string): string {
+  const s = COMMENT_STARTERS[lang]?.[0];
+  return s && (s === '#' || s === '--' || s === '//') ? s : '//';
+}
+
+/** Brief context from other visible editor tabs (bounded), as comment lines. */
+function gatherOpenTabsContext(doc: vscode.TextDocument, lang: string): string {
+  const others = vscode.window.visibleTextEditors
+    .map((e) => e.document)
+    .filter((d) => d.uri.scheme === 'file' && d.uri.toString() !== doc.uri.toString());
+  if (others.length === 0) return '';
+  const cm = lineComment(lang);
+  const parts: string[] = [];
+  let budget = 600;
+  for (const d of others) {
+    const head = d.getText(new vscode.Range(0, 0, Math.min(d.lineCount, 14), 0)).trim();
+    if (!head) continue;
+    const body = head.slice(0, 300).split('\n').map((l) => `${cm} ${l}`).join('\n');
+    const block = `${cm} ${vscode.workspace.asRelativePath(d.uri)}:\n${body}`;
+    if (block.length > budget) break;
+    parts.push(block);
+    budget -= block.length;
+  }
+  return parts.length ? parts.join('\n') + '\n' : '';
+}
 
 /** Raw prefix/suffix around the cursor (for FIM and prompt building). */
 function buildContext(doc: vscode.TextDocument, position: vscode.Position): { prefix: string; suffix: string } {
@@ -128,7 +155,10 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
         const fimOff = cfg.get<string>('completionFim', 'auto') === 'off';
         const useFim = !fimOff && fimTemplateFor(completionModel) !== 'none';
         const maxTokens = cfg.get<number>('completionMaxTokens', 150);
-        const { prefix, suffix } = buildContext(document, position);
+        const ctx = buildContext(document, position);
+        const tabsCtx = cfg.get<boolean>('completionContextTabs', true) ? gatherOpenTabsContext(document, lang) : '';
+        const prefix = tabsCtx + ctx.prefix;
+        const suffix = ctx.suffix;
         this.statusBar?.setBusy(true);
 
         // One generation, FIM or chat-style depending on the model.
