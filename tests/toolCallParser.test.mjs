@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 // Importing the compiled module must NOT throw (would mean it pulled in vscode)
 const mod = await import('../out/agent/toolCallParser.js');
-const { parseToolCall, sanitizeToolCall, stripMarkdownLink, TOOL_NAMES, TOOL_CALL_RE, FENCED_TOOL_RE } = mod;
+const { parseToolCall, sanitizeToolCall, stripMarkdownLink, TOOL_NAMES, TOOL_CALL_RE, FENCED_TOOL_RE, TOOL_CALL_SCHEMA } = mod;
 
 test('module imports without vscode', () => {
   assert.equal(typeof parseToolCall, 'function');
@@ -70,4 +70,16 @@ test('edit_file search/replace round-trip through pass 3', () => {
   const call = parseToolCall(raw);
   assert.equal(call.tool, 'edit_file');
   assert.ok(call.search.includes('foo'));
+});
+
+test('TOOL_CALL_SCHEMA enumerates all tools plus "final"', () => {
+  const e = TOOL_CALL_SCHEMA.properties.tool.enum;
+  for (const t of TOOL_NAMES) assert.ok(e.includes(t), `schema enum missing ${t}`);
+  assert.ok(e.includes('final'));
+  assert.deepEqual(TOOL_CALL_SCHEMA.required, ['tool']);
+});
+
+test('sanitizeToolCall cleans a structured-output object', () => {
+  const call = sanitizeToolCall({ tool: 'create_file', path: '[a.ts](http://x)', content: 'x' });
+  assert.equal(call.path, 'a.ts');
 });
