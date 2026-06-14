@@ -16,6 +16,13 @@ GitHub Copilot'ı kaliteli yapan özelliklerin araştırılmasıyla oluşturulmu
 > - **Test altyapısı**: `node:test` ile 61 birim test (saf modüller vscode'suz).
 >
 > Güncel mimari/klasör yapısı için → `CLAUDE.md`. Kalan/ertelenen: tam codicon görsel geçişi (interaktif doğrulama gerektirir), NES (5.x), `semantic_search` agent tool'u.
+>
+> **3. Tur (model stratejisi + performans):**
+> - **Rol-bazlı model yönlendirme** (`modelCatalog.ts` + `resolveRoleModel`): chat/agent/completion/embedding ayrı modeller; curated registry UI/öneri besler, hardcode yok.
+> - **Structured-output tool calls** (Ollama `format` / OpenAI `json_schema`) → agent güvenilirliği; XML fallback korunur.
+> - **Gerçek FIM completion** (Ollama `suffix`) coder modellerde (qwen2.5-coder vb.); 1.6/1.7 belirgin iyileşti.
+> - **keep_alive** ile sıcak model (latency); açık-sekme + auto-@workspace context engineering (1.9/6.x ✅).
+> - Edge-case: rol modeli inmemişse aksiyonlu uyarı + ana modele fallback. Speculative decoding → doküman (Ollama açmıyor).
 
 **Lejant:**
 - ✅ = Mevcut uzantıda var

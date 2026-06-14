@@ -18,10 +18,11 @@ src/
 ├── extension.ts          # Giriş noktası, komut/provider kaydı (minimal tut)
 ├── statusBar.ts          # BackendService'e abone saf renderer (spinner, flash hint)
 ├── llm/                  # TÜM LLM trafiği bu katmandan geçer
-│   ├── provider.ts           # LlmProvider arayüzü + capabilities
-│   ├── ollamaProvider.ts     # Ollama (NDJSON, /api/chat|generate|embed|pull)
-│   ├── openaiCompatProvider.ts # OpenAI-uyumlu (/v1/chat|models|embeddings, SSE)
-│   ├── client.ts             # Facade (ollamaChat/Generate/Embed, getCapabilities, pullModelStream)
+│   ├── provider.ts           # LlmProvider arayüzü + capabilities (canStructuredOutput)
+│   ├── ollamaProvider.ts     # Ollama (NDJSON, /api/chat|generate(suffix=FIM)|embed|pull, format, keep_alive)
+│   ├── openaiCompatProvider.ts # OpenAI-uyumlu (/v1/chat|models|embeddings, SSE, response_format)
+│   ├── modelCatalog.ts       # Saf rol→model registry + FIM tespiti (testli; GÜNCEL TUT)
+│   ├── client.ts             # Facade (+ resolveRoleModel, getCapabilities, pullModelStream)
 │   ├── backendService.ts     # Tek durum kaynağı (serverState/models/pulls, EventEmitter, backoff)
 │   ├── streamParse.ts        # Saf NDJSON+SSE parser'ları (testli)
 │   ├── contextWindow.ts      # Token tahmini + fitMessages budaması (testli)
@@ -62,6 +63,9 @@ tests/*.test.mjs          # node:test, derlenmiş out/ saf modüllerine karşı
 - Webview tarafı vanilla JS (`media/chat.js`), React/framework ekleme
 - Tüm kullanıcı ayarları `gemmaAgent.*` prefix'iyle `package.json` configuration'ına eklenecek
 - Agent max iterations config'den okunur (`agentMaxIterations`), hardcode etme
+- **Model rolleri:** `resolveRoleModel('chat'|'agent'|'completion'|'embedding')` ile çözülür; "en iyi model"i hardcode etme — `modelCatalog.ts` veri-odaklı, kullanıcı her modeli çalıştırabilir
+- **Agent tool çağrıları:** sunucu destekliyorsa structured-output (JSON-schema, `TOOL_CALL_SCHEMA`) ile; yoksa XML/fenced parser fallback (capability-gated)
+- **Completion:** coder modelde gerçek FIM (Ollama `suffix`); değilse `[CURSOR]` chat promptu
 - Sıfır runtime dependency (esbuild devDep; codicon/walkthrough/font asset serbest)
 
 ## Konfigürasyon Anahtarları (Sık Kullanılanlar)
@@ -69,8 +73,12 @@ tests/*.test.mjs          # node:test, derlenmiş out/ saf modüllerine karşı
 |---|---|---|
 | `gemmaAgent.apiProtocol` | `ollama` | `ollama` veya `openai-compatible` |
 | `gemmaAgent.ollamaUrl` | `http://localhost:11434` | Sunucu adresi (Ollama veya OpenAI-uyumlu) |
-| `gemmaAgent.model` | `gemma4:e4b` | Aktif model |
-| `gemmaAgent.completionModel` | `""` | Completion için ayrı model (boş = ana model) |
+| `gemmaAgent.model` | `gemma4:e4b` | Ana chat modeli |
+| `gemmaAgent.agentModel` | `""` | Agent rolü modeli (boş = ana model) |
+| `gemmaAgent.completionModel` | `""` | Completion modeli (boş = ana model; FIM için `qwen2.5-coder:*-base`) |
+| `gemmaAgent.agentStructuredOutput` | `true` | Agent tool çağrılarını JSON-schema ile kısıtla |
+| `gemmaAgent.completionFim` | `auto` | Model destekliyorsa gerçek FIM |
+| `gemmaAgent.keepAlive` | `30m` | Modeli RAM'de sıcak tut |
 | `gemmaAgent.maxTokens` | `4096` | Chat max token (num_predict) |
 | `gemmaAgent.numCtx` | `8192` | Context window (num_ctx) |
 | `gemmaAgent.completionLanguages` | `{"*":true,…}` | Dil bazlı completion aç/kapa |
@@ -89,8 +97,8 @@ tests/*.test.mjs          # node:test, derlenmiş out/ saf modüllerine karşı
 
 ## Test
 `npm test` → `tsc` derler + `node --test tests/*.test.mjs`. Saf modüller (`*Core`, `toolCallParser`,
-`streamParse`, `contextWindow`, `chunker`, `editApply`, `sessionStore`, `completionClean`, `scmUtils`)
-vscode import etmez; her test bunu da doğrular.
+`streamParse`, `contextWindow`, `chunker`, `editApply`, `sessionStore`, `completionClean`, `scmUtils`,
+`modelCatalog`) vscode import etmez; her test bunu da doğrular.
 
 ## Detaylı Dokümantasyon
 Mimari detaylar, veri akışları ve genişletme rehberi için → `docs/full-spec.md`

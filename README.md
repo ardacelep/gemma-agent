@@ -51,6 +51,24 @@ Select code (or just place the cursor) and press `Cmd+Shift+I` / `Ctrl+Shift+I`:
 - Or any OpenAI-compatible server (LM Studio, Jan, llama.cpp `llama-server`, vLLM, LocalAI): set `gemmaAgent.apiProtocol` to `openai-compatible` and point `gemmaAgent.ollamaUrl` at it.
 - A model, e.g. `gemma4:e4b`. For `@workspace`, also pull an embedding model (`nomic-embed-text`).
 
+## Choosing models (this matters as much as the code)
+
+Gemma Agent routes each task to a **role**, so you can run a different model per job. Set these in Settings; empty roles fall back to the main model.
+
+| Role | Setting | Good picks (mid‑2026) | Why |
+|---|---|---|---|
+| Chat | `gemmaAgent.model` | `gemma4:e4b`, `qwen3:8b`, `gemma3:12b` | General Q&A, explanations |
+| Agent | `gemmaAgent.agentModel` | `qwen3-coder:30b`, `devstral:24b`, `qwen2.5-coder:7b` | Reliable tool‑calling + multi‑file edits |
+| Completion | `gemmaAgent.completionModel` | `qwen2.5-coder:1.5b-base`, `:3b-base`, `codegemma:2b` | **Real FIM** ghost text — small *and* high‑quality |
+| Embedding | `gemmaAgent.embeddingModel` | `nomic-embed-text`, `embeddinggemma` | `@workspace` semantic search |
+
+Notes:
+- **Ghost text quality** comes from a code model with fill‑in‑the‑middle, not from size — `qwen2.5-coder:1.5b-base` is tiny *and* excellent. Use the `-base` variant for FIM. Detection is automatic (`gemmaAgent.completionFim: auto`).
+- **Agent reliability** scales with the model. A strong tool‑caller plus structured‑output (`gemmaAgent.agentStructuredOutput`, on by default where supported) makes agent mode far more dependable than a small general model.
+- Everything installs the same way: `ollama pull qwen2.5-coder:1.5b-base`. If a role's model isn't installed, Gemma Agent offers to pull it and falls back to the main model meanwhile.
+- The starting recommendations live in `src/llm/modelCatalog.ts` — **keep it current**; local models move fast (e.g. Qwen3‑Coder‑Next, DeepSeek V4, MiniMax M3, Kimi K2, Gemma 4 12B). You can run *any* model regardless of the catalog.
+- **Faster generation:** for a big speedup, run a server that supports **speculative decoding** with a small draft model — LM Studio (≥0.3.10) or `llama-server --model-draft`. Ollama doesn't expose this yet. `gemmaAgent.keepAlive` (default 30m) keeps the model warm between turns.
+
 ## Keyboard shortcuts
 
 | Action | macOS | Windows/Linux |
@@ -70,14 +88,17 @@ Select code (or just place the cursor) and press `Cmd+Shift+I` / `Ctrl+Shift+I`:
 | Setting | Default | Description |
 |---|---|---|
 | `gemmaAgent.apiProtocol` | `ollama` | `ollama` or `openai-compatible` |
-| `gemmaAgent.model` | `gemma4:e4b` | Model to use |
-| `gemmaAgent.completionModel` | `""` | Separate (faster) model for inline completion; empty = main model |
+| `gemmaAgent.model` | `gemma4:e4b` | Main chat model |
+| `gemmaAgent.agentModel` | `""` | Model for ⚡ Agent mode; empty = main model |
+| `gemmaAgent.completionModel` | `""` | Model for inline completion; empty = main model |
+| `gemmaAgent.agentStructuredOutput` | `true` | Schema-constrain agent tool calls for reliability |
+| `gemmaAgent.completionFim` | `auto` | Real fill-in-the-middle when the model supports it |
+| `gemmaAgent.keepAlive` | `30m` | Keep the model warm in RAM between requests |
 | `gemmaAgent.numCtx` | `8192` | Context window size (more = more RAM) |
 | `gemmaAgent.agentRequireApproval` | `commands` | Which agent tools need approval (`commands` / `commandsAndWrites` / `never`) |
 | `gemmaAgent.agentAutoVerify` | `true` | Run diagnostics + self-fix after agent edits |
 | `gemmaAgent.workspaceIndexEnabled` | `false` | Enable `@workspace` semantic search |
-| `gemmaAgent.completionLanguages` | `{"*": true, "markdown": false, …}` | Per-language completion toggle |
-| `gemmaAgent.completionAlternatives` | `1` | Completion suggestions to generate (1–3; >1 adds latency) |
+| `gemmaAgent.autoWorkspaceContext` | `false` | Auto-attach relevant code to chat (needs index) |
 
 See the full list in Settings under **Gemma Agent**.
 
