@@ -45,6 +45,7 @@ function getConfig() {
     maxTokens: cfg.get<number>('maxTokens', 4096),
     numCtx: cfg.get<number>('numCtx', 8192),
     embeddingModel: cfg.get<string>('embeddingModel', 'nomic-embed-text'),
+    keepAlive: cfg.get<string>('keepAlive', '30m'),
   };
 }
 
@@ -77,7 +78,7 @@ export function getApiProtocol(): ApiProtocol {
 }
 
 export async function* ollamaChat(opts: ChatOptions): AsyncGenerator<string> {
-  const { model, maxTokens, numCtx } = getConfig();
+  const { model, maxTokens, numCtx, keepAlive } = getConfig();
   yield* getProvider().chat({
     messages: opts.messages,
     signal: opts.signal,
@@ -85,11 +86,12 @@ export async function* ollamaChat(opts: ChatOptions): AsyncGenerator<string> {
     maxTokens,
     numCtx,
     format: opts.format,
+    keepAlive,
   });
 }
 
 export async function ollamaGenerate(opts: GenerateOptions): Promise<string> {
-  const { model, maxTokens, numCtx } = getConfig();
+  const { model, maxTokens, numCtx, keepAlive } = getConfig();
   return getProvider().generate({
     prompt: opts.prompt,
     system: opts.system,
@@ -99,6 +101,7 @@ export async function ollamaGenerate(opts: GenerateOptions): Promise<string> {
     maxTokens: opts.maxTokens ?? maxTokens,
     temperature: opts.temperature,
     numCtx,
+    keepAlive,
   });
 }
 

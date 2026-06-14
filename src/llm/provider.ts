@@ -28,6 +28,8 @@ export interface ChatRequest {
   numCtx?: number;
   /** JSON schema to constrain the output (only honored when canStructuredOutput). */
   format?: object;
+  /** How long to keep the model warm in RAM (Ollama keep_alive, e.g. "30m"). */
+  keepAlive?: string;
 }
 
 export interface GenerateRequest {
@@ -40,6 +42,7 @@ export interface GenerateRequest {
   maxTokens?: number;
   temperature?: number;
   numCtx?: number;
+  keepAlive?: string;
 }
 
 export interface PullProgress {

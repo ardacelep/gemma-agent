@@ -27,6 +27,7 @@ export class OllamaProvider implements LlmProvider {
           messages: req.messages,
           stream: true,
           ...(req.format ? { format: req.format } : {}),
+          ...(req.keepAlive ? { keep_alive: req.keepAlive } : {}),
           options: { num_predict: req.maxTokens, num_ctx: req.numCtx },
         }),
       });
@@ -65,6 +66,7 @@ export class OllamaProvider implements LlmProvider {
           ...(req.suffix !== undefined ? { suffix: req.suffix } : {}),
           system: req.system,
           stream: false,
+          ...(req.keepAlive ? { keep_alive: req.keepAlive } : {}),
           options: {
             num_predict: req.maxTokens,
             num_ctx: req.numCtx,

@@ -301,6 +301,11 @@
           "maximum": 131072,
           "description": "Context window size (num_ctx) sent to Ollama. Larger values use more RAM."
         },
+        "gemmaAgent.keepAlive": {
+          "type": "string",
+          "default": "30m",
+          "description": "How long Ollama keeps the model loaded in RAM between requests (e.g. 5m, 30m, -1 for always). Longer avoids cold-reload latency after idle."
+        },
         "gemmaAgent.codeActionsEnabled": {
           "type": "boolean",
           "default": true,
