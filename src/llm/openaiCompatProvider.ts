@@ -15,6 +15,7 @@ export class OpenAiCompatProvider implements LlmProvider {
     canUnload: false,
     canStartStopServer: false,
     canListAvailable: false,
+    canStructuredOutput: true,
   };
 
   constructor(readonly baseUrl: string) {}
@@ -42,6 +43,7 @@ export class OpenAiCompatProvider implements LlmProvider {
           messages: req.messages,
           stream: true,
           ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),
+          ...(req.format ? { response_format: { type: 'json_schema', json_schema: { name: 'tool_call', schema: req.format, strict: true } } } : {}),
         }),
       });
     } catch (err) {

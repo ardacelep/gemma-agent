@@ -10,6 +10,7 @@ export class OllamaProvider implements LlmProvider {
     canUnload: true,
     canStartStopServer: true,
     canListAvailable: true,
+    canStructuredOutput: true,
   };
 
   constructor(readonly baseUrl: string) {}
@@ -25,6 +26,7 @@ export class OllamaProvider implements LlmProvider {
           model: req.model,
           messages: req.messages,
           stream: true,
+          ...(req.format ? { format: req.format } : {}),
           options: { num_predict: req.maxTokens, num_ctx: req.numCtx },
         }),
       });
@@ -60,6 +62,7 @@ export class OllamaProvider implements LlmProvider {
         body: JSON.stringify({
           model: req.model,
           prompt: req.prompt,
+          ...(req.suffix !== undefined ? { suffix: req.suffix } : {}),
           system: req.system,
           stream: false,
           options: {

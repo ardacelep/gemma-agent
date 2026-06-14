@@ -1,27 +1,27 @@
 import * as vscode from 'vscode';
-import { ollamaGenerate } from '../llm/client';
+import { ollamaGenerate, resolveRoleModel } from '../llm/client';
+import { fimTemplateFor } from '../llm/modelCatalog';
 import { clean, isCommentLine } from './completionClean';
 import { StatusBarManager } from '../statusBar';
+import { BackendService } from '../llm/backendService';
 
-function buildPrompt(doc: vscode.TextDocument, position: vscode.Position): string {
-  const lang = doc.languageId;
-  const totalLines = doc.lineCount;
-
-  // Prefix: up to 60 lines before cursor
+/** Raw prefix/suffix around the cursor (for FIM and prompt building). */
+function buildContext(doc: vscode.TextDocument, position: vscode.Position): { prefix: string; suffix: string } {
   const prefixStart = Math.max(0, position.line - 60);
   const prefix = doc.getText(new vscode.Range(prefixStart, 0, position.line, position.character));
+  const suffixEnd = Math.min(doc.lineCount, position.line + 20);
+  const suffix = doc.getText(new vscode.Range(position.line, position.character, suffixEnd, 0));
+  return { prefix, suffix };
+}
 
-  // Suffix: up to 20 lines after cursor (so model knows what NOT to write)
-  const suffixEnd = Math.min(totalLines, position.line + 20);
-  const suffix = doc.getText(new vscode.Range(position.line, position.character, suffixEnd, 0)).trimEnd();
-
+/** Chat-style prompt for general (non-FIM) models. */
+function buildChatPrompt(lang: string, prefix: string, suffix: string): string {
   if (suffix.trim()) {
     return (
       `Complete the code at [CURSOR]. Output ONLY the inserted text, no explanation.\n\n` +
-      `\`\`\`${lang}\n${prefix}[CURSOR]${suffix}\n\`\`\``
+      `\`\`\`${lang}\n${prefix}[CURSOR]${suffix.trimEnd()}\n\`\`\``
     );
   }
-  // No suffix — simpler prompt
   return `\`\`\`${lang}\n${prefix}`;
 }
 
@@ -31,13 +31,48 @@ const SYSTEM =
   'Keep the completion short: finish the current expression or at most one small block. ' +
   'Match the indentation of the surrounding code exactly.';
 
+/** Light cleanup for FIM output (raw middle insertion — no prose to strip). */
+function cleanFim(raw: string): string {
+  return raw.replace(/^```[\w-]*\n?/, '').replace(/\n?```\s*$/, '');
+}
+
 export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvider {
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
   private activeRequest: AbortController | undefined;
   /** Resolver of a superseded request — must be settled so VS Code never waits forever. */
   private pendingResolve: ((value: vscode.InlineCompletionList | null) => void) | undefined;
+  /** Completion models we've already warned about (avoid repeat toasts). */
+  private warnedModels = new Set<string>();
 
-  constructor(private readonly statusBar?: StatusBarManager) {}
+  constructor(
+    private readonly statusBar?: StatusBarManager,
+    private readonly backend?: BackendService
+  ) {}
+
+  /**
+   * If a dedicated completion model is configured but not installed, warn once
+   * (with a Pull action) and fall back to the main model for this request.
+   */
+  private resolveAvailableCompletionModel(): string {
+    const configured = resolveRoleModel('completion');
+    const mainModel = resolveRoleModel('chat');
+    if (!configured || configured === mainModel) return configured;
+    const state = this.backend?.state;
+    if (!state || state.serverState !== 'ready') return configured; // can't tell — try as-is
+    if (state.models.includes(configured)) return configured;
+    if (!this.warnedModels.has(configured)) {
+      this.warnedModels.add(configured);
+      if (state.capabilities.canPull) {
+        void vscode.window.showWarningMessage(
+          `Completion model "${configured}" is not installed — using the main model for now.`,
+          `Pull ${configured}`
+        ).then((pick) => {
+          if (pick) void vscode.commands.executeCommand('gemmaAgent.pullModel', configured);
+        });
+      }
+    }
+    return mainModel; // graceful fallback
+  }
 
   async provideInlineCompletionItems(
     document: vscode.TextDocument,
@@ -89,23 +124,25 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
         this.activeRequest?.abort();
         this.activeRequest = new AbortController();
 
-        const completionModel = cfg.get<string>('completionModel', '') || undefined;
+        const completionModel = this.resolveAvailableCompletionModel();
+        const fimOff = cfg.get<string>('completionFim', 'auto') === 'off';
+        const useFim = !fimOff && fimTemplateFor(completionModel) !== 'none';
+        const maxTokens = cfg.get<number>('completionMaxTokens', 150);
+        const { prefix, suffix } = buildContext(document, position);
         this.statusBar?.setBusy(true);
-        try {
-          const prompt = buildPrompt(document, position);
-          const maxTokens = cfg.get<number>('completionMaxTokens', 150);
-          const raw = await ollamaGenerate({
-            prompt,
-            system: SYSTEM,
-            maxTokens,
-            model: completionModel,
-            signal: this.activeRequest.signal,
-          });
 
+        // One generation, FIM or chat-style depending on the model.
+        const generate = (temperature?: number) => useFim
+          ? ollamaGenerate({ prompt: prefix, suffix, model: completionModel, maxTokens, temperature: temperature ?? 0.1, signal: this.activeRequest!.signal })
+          : ollamaGenerate({ prompt: buildChatPrompt(lang, prefix, suffix), system: SYSTEM, model: completionModel, maxTokens, temperature, signal: this.activeRequest!.signal });
+        const cleanOut = (raw: string) => useFim ? cleanFim(raw) : clean(raw, linePrefix, lang);
+
+        try {
+          const raw = await generate();
           if (token.isCancellationRequested || !raw.trim()) return finish(null);
 
-          const completion = clean(raw, linePrefix, lang);
-          if (!completion) return finish(null);
+          const completion = cleanOut(raw);
+          if (!completion.trim()) return finish(null);
 
           // Reject if the completion looks like it's re-writing existing suffix
           const nextLineText = position.line + 1 < document.lineCount
@@ -121,16 +158,8 @@ export class GemmaCompletionProvider implements vscode.InlineCompletionItemProvi
           const alternatives = Math.min(3, Math.max(1, cfg.get<number>('completionAlternatives', 1)));
           for (let n = 1; n < alternatives && !token.isCancellationRequested; n++) {
             try {
-              const altRaw = await ollamaGenerate({
-                prompt,
-                system: SYSTEM,
-                maxTokens,
-                temperature: 0.8,
-                model: completionModel,
-                signal: this.activeRequest.signal,
-              });
-              const alt = clean(altRaw, linePrefix, lang);
-              if (alt &&
+              const alt = cleanOut(await generate(0.8));
+              if (alt.trim() &&
                   !items.some((it) => it.insertText === alt) &&
                   !(nextLineText && alt.includes(nextLineText))) {
                 items.push(new vscode.InlineCompletionItem(alt, range));

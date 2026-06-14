@@ -16,6 +16,8 @@ export interface LlmCapabilities {
   canStartStopServer: boolean;
   /** Offer a static catalog of downloadable models in the picker. */
   canListAvailable: boolean;
+  /** Constrain generation to a JSON schema (Ollama format / OpenAI json_schema). */
+  canStructuredOutput: boolean;
 }
 
 export interface ChatRequest {
@@ -24,11 +26,15 @@ export interface ChatRequest {
   model?: string;
   maxTokens?: number;
   numCtx?: number;
+  /** JSON schema to constrain the output (only honored when canStructuredOutput). */
+  format?: object;
 }
 
 export interface GenerateRequest {
   prompt: string;
   system?: string;
+  /** FIM suffix — server applies the model's fill-in-the-middle template. */
+  suffix?: string;
   signal?: AbortSignal;
   model?: string;
   maxTokens?: number;

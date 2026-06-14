@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { LlmCapabilities, LlmProvider, OllamaMessage, PullProgress } from './provider';
 import { OllamaProvider } from './ollamaProvider';
 import { OpenAiCompatProvider } from './openaiCompatProvider';
+import { ModelRole } from './modelCatalog';
 
 export const DEFAULT_MODEL = 'gemma4:e4b';
 
@@ -15,6 +16,8 @@ export type ApiProtocol = 'ollama' | 'openai-compatible';
 export interface GenerateOptions {
   prompt: string;
   system?: string;
+  /** FIM suffix (code after the cursor) — Ollama applies the model's FIM template. */
+  suffix?: string;
   stream?: boolean;
   maxTokens?: number;
   temperature?: number;
@@ -27,6 +30,8 @@ export interface ChatOptions {
   stream?: boolean;
   signal?: AbortSignal;
   model?: string;
+  /** JSON schema for structured output (capability-gated). */
+  format?: object;
 }
 
 function getConfig() {
@@ -35,11 +40,24 @@ function getConfig() {
     protocol: cfg.get<ApiProtocol>('apiProtocol', 'ollama'),
     baseUrl: cfg.get<string>('ollamaUrl', 'http://localhost:11434'),
     model: cfg.get<string>('model', DEFAULT_MODEL),
+    agentModel: cfg.get<string>('agentModel', ''),
     completionModel: cfg.get<string>('completionModel', ''),
     maxTokens: cfg.get<number>('maxTokens', 4096),
     numCtx: cfg.get<number>('numCtx', 8192),
     embeddingModel: cfg.get<string>('embeddingModel', 'nomic-embed-text'),
   };
+}
+
+/** Resolve the model for a task role, falling back to the main chat model. */
+export function resolveRoleModel(role: ModelRole): string {
+  const c = getConfig();
+  switch (role) {
+    case 'agent':      return c.agentModel || c.model;
+    case 'completion': return c.completionModel || c.model;
+    case 'embedding':  return c.embeddingModel;
+    case 'chat':
+    default:           return c.model;
+  }
 }
 
 /** Build a provider from current config. Cheap — just stores a base URL. */
@@ -66,6 +84,7 @@ export async function* ollamaChat(opts: ChatOptions): AsyncGenerator<string> {
     model: opts.model ?? model,
     maxTokens,
     numCtx,
+    format: opts.format,
   });
 }
 
@@ -74,6 +93,7 @@ export async function ollamaGenerate(opts: GenerateOptions): Promise<string> {
   return getProvider().generate({
     prompt: opts.prompt,
     system: opts.system,
+    suffix: opts.suffix,
     signal: opts.signal,
     model: opts.model ?? model,
     maxTokens: opts.maxTokens ?? maxTokens,
